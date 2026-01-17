@@ -1,0 +1,54 @@
+[workspace]
+members = [".", "python"]
+
+[package]
+name = "wser"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+iroh = ["dep:iroh"]
+
+[dependencies]
+moq-transport = "0.12"
+moq-token = "0.5"
+iroh = { version = "0.95", optional = true }
+moq-native = "0.11"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+bytes = "1"
+rand = "0.9"
+
+[[example]]
+name = "server_iroh"
+path = "examples/server_iroh.rs"
+required-features = ["iroh"]
+
+[[example]]
+name = "client_iroh"
+path = "examples/client_iroh.rs"
+required-features = ["iroh"]
+
+[[example]]
+name = "server"
+path = "examples/server.rs"
+
+[[example]]
+name = "client"
+path = "examples/client.rs"
+
+[[example]]
+name = "gen_token"
+path = "examples/gen_token.rs"
+
+[[example]]
+name = "server_auth"
+path = "examples/server_auth.rs"
+
+[[example]]
+name = "client_auth"
+path = "examples/client_auth.rs"

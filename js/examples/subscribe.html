@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wser subscriber</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; margin: 0.5rem 0; cursor: pointer; }
+    #log { background: #1a1a1a; color: #0f0; padding: 1rem; height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.9rem; }
+    .error { color: #f00; }
+    .data { color: #0ff; }
+  </style>
+</head>
+<body>
+  <h1>wser subscriber</h1>
+  <div>
+    <label>URL: <input type="text" id="url" value="https://cdn.moq.dev/anon" /></label>
+  </div>
+  <div>
+    <label>Path: <input type="text" id="path" value="wser-duplex" /></label>
+  </div>
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as Moq from "@moq/lite";
+
+    const logEl = document.getElementById("log");
+    const startBtn = document.getElementById("start");
+    const stopBtn = document.getElementById("stop");
+
+    let connection = null;
+    let running = false;
+    const decoder = new TextDecoder();
+
+    function log(msg, className = "") {
+      const line = document.createElement("div");
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      if (className) line.className = className;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        const url = document.getElementById("url").value;
+        const path = document.getElementById("path").value;
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        running = true;
+
+        log(`Connecting to ${url}...`);
+        connection = await Moq.Connection.connect(new URL(url));
+        log("Connected!");
+
+        log(`Subscribing to broadcast: ${path}`);
+        const broadcast = connection.consume(Moq.Path.from(path));
+        log("Got broadcast handle");
+
+        log("Subscribing to track: serial");
+        const track = broadcast.subscribe("serial", 0);
+        log("Subscribed to track, waiting for data...");
+
+        while (running) {
+          log("Waiting for next group...");
+          const group = await track.nextGroup();
+          if (!group) {
+            log("No more groups");
+            break;
+          }
+          log(`Got group ${group.sequence}`);
+
+          while (running) {
+            const frame = await group.readFrame();
+            if (!frame) {
+              log("End of group");
+              break;
+            }
+            log(`Data: ${decoder.decode(frame)}`, "data");
+          }
+        }
+
+        log("Loop ended");
+      } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        console.error(e);
+      } finally {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      log("Stopping...");
+      running = false;
+      await connection?.close();
+      connection = null;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    });
+  </script>
+</body>
+</html>

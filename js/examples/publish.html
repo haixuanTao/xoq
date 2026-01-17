@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wser publisher</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; margin: 0.5rem 0; cursor: pointer; }
+    #log { background: #1a1a1a; color: #0f0; padding: 1rem; height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.9rem; }
+    .error { color: #f00; }
+  </style>
+</head>
+<body>
+  <h1>wser publisher</h1>
+  <div>
+    <label>URL: <input type="text" id="url" value="https://cdn.moq.dev/anon" /></label>
+  </div>
+  <div>
+    <label>Path: <input type="text" id="path" value="wser-duplex" /></label>
+  </div>
+  <div>
+    <label>Baud rate: <input type="number" id="baudRate" value="1000000" /></label>
+  </div>
+  <button id="start">Select Port & Start</button>
+  <button id="stop" disabled>Stop</button>
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script type="module">
+    import { Publisher } from "../src/index.ts";
+
+    const logEl = document.getElementById("log");
+    const startBtn = document.getElementById("start");
+    const stopBtn = document.getElementById("stop");
+
+    let publisher = null;
+    let port = null;
+
+    function log(msg, isError = false) {
+      const line = document.createElement("div");
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      if (isError) line.className = "error";
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        const url = document.getElementById("url").value;
+        const path = document.getElementById("path").value;
+        const baudRate = parseInt(document.getElementById("baudRate").value);
+
+        log("Requesting serial port...");
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate });
+        log(`Opened serial port at ${baudRate} baud`);
+
+        publisher = new Publisher({ url, path, serial: port });
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        log(`Connecting to ${url}/${path}...`);
+        await publisher.start();
+        log("Publisher stopped");
+      } catch (e) {
+        log(`Error: ${e.message}`, true);
+      } finally {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      log("Stopping...");
+      await publisher?.stop();
+      await port?.close();
+      publisher = null;
+      port = null;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    });
+  </script>
+</body>
+</html>

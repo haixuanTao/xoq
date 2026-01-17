@@ -1,0 +1,39 @@
+{
+  "name": "wser",
+  "version": "0.1.0",
+  "description": "MoQ-based serial port streaming for the web",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "examples": "vite examples",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "moq",
+    "serial",
+    "webserial",
+    "webtransport",
+    "streaming"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/w3c-web-serial": "^1.0.8",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "@moq/lite": "^0.1.0"
+  }
+}
