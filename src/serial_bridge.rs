@@ -720,3 +720,111 @@ impl std::io::Write for RemoteSerialPort {
         Ok(())
     }
 }
+
+impl serialport::SerialPort for RemoteSerialPort {
+    fn name(&self) -> Option<String> {
+        Some(self.port_name.clone())
+    }
+
+    fn baud_rate(&self) -> serialport::Result<u32> {
+        // Remote port - baud rate is configured on the server side
+        Ok(1_000_000)
+    }
+
+    fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+        Ok(serialport::DataBits::Eight)
+    }
+
+    fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+        Ok(serialport::FlowControl::None)
+    }
+
+    fn parity(&self) -> serialport::Result<serialport::Parity> {
+        Ok(serialport::Parity::None)
+    }
+
+    fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+        Ok(serialport::StopBits::One)
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+        // Baud rate is configured on the server side
+        Ok(())
+    }
+
+    fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+        self.timeout = timeout;
+        Ok(())
+    }
+
+    fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+
+    fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+
+    fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
+
+    fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+        Ok(true)
+    }
+
+    fn bytes_to_read(&self) -> serialport::Result<u32> {
+        Ok(self.buffer.len() as u32)
+    }
+
+    fn bytes_to_write(&self) -> serialport::Result<u32> {
+        Ok(0)
+    }
+
+    fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Io(std::io::ErrorKind::Unsupported),
+            "Clone not supported for remote serial ports",
+        ))
+    }
+
+    fn set_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
+
+    fn clear_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
+}

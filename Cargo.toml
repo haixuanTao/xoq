@@ -27,6 +27,7 @@ rand = "0.9"
 
 [dev-dependencies]
 rustypot = "1.4.2"
+ctrlc = "3"
 
 [[example]]
 name = "serial_server"
@@ -56,4 +57,14 @@ required-features = ["serial"]
 [[example]]
 name = "rustypot_remote"
 path = "examples/rustypot_remote.rs"
+required-features = ["iroh", "serial"]
+
+[[example]]
+name = "so100_teleop"
+path = "examples/so100_teleop.rs"
+required-features = ["iroh", "serial"]
+
+[[example]]
+name = "so100_reboot"
+path = "examples/so100_reboot.rs"
 required-features = ["iroh", "serial"]
