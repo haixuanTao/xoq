@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Example showing pyserial-compatible API for remote serial ports.
 
-This example demonstrates how wser.Serial can be used as a drop-in
+This example demonstrates how xoq.Serial can be used as a drop-in
 replacement for serial.Serial, connecting to a remote serial port
 over iroh P2P instead of a local port.
 
@@ -9,13 +9,13 @@ Usage: serial_pyserial_compat.py <server-endpoint-id>
 """
 
 import sys
-import wser
+import xoq
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: serial_pyserial_compat.py <server-endpoint-id>")
         print("\nThis script demonstrates pyserial-compatible API:")
-        print("  - wser.Serial(port) instead of serial.Serial(port)")
+        print("  - xoq.Serial(port) instead of serial.Serial(port)")
         print("  - Same methods: read(), write(), readline(), etc.")
         return
 
@@ -26,10 +26,10 @@ def main():
     # ========================================
 
     # Instead of: ser = serial.Serial('/dev/ttyUSB0', 115200)
-    # Use:        ser = wser.Serial(server_id)
+    # Use:        ser = xoq.Serial(server_id)
 
     # Context manager works just like pyserial
-    with wser.Serial(server_id) as ser:
+    with xoq.Serial(server_id) as ser:
         print(f"Connected to: {ser.port}")
         print(f"is_open={ser.is_open}")
 
@@ -71,7 +71,7 @@ def interactive_example():
 
     server_id = sys.argv[1]
 
-    with wser.Serial(server_id) as ser:
+    with xoq.Serial(server_id) as ser:
         print("Interactive mode. Type commands, Ctrl+C to exit.\n")
 
         import threading

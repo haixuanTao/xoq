@@ -1,4 +1,4 @@
-//! Python bindings for wser
+//! Python bindings for xoq
 //!
 //! Provides Python access to MoQ and iroh P2P communication.
 //! All functions are blocking (synchronous).
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Use external crate with explicit path to avoid shadowing by our module name
-use ::wser as wser_lib;
+use ::xoq as xoq_lib;
 
 // Global tokio runtime for blocking calls
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -28,7 +28,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 /// A duplex MoQ connection that can publish and subscribe
 #[pyclass]
 struct MoqConnection {
-    inner: Arc<Mutex<wser_lib::MoqConnection>>,
+    inner: Arc<Mutex<xoq_lib::MoqConnection>>,
 }
 
 #[pymethods]
@@ -36,17 +36,17 @@ impl MoqConnection {
     /// Connect as a duplex endpoint (can publish and subscribe)
     ///
     /// Args:
-    ///     path: Path on the relay (default: "anon/wser")
+    ///     path: Path on the relay (default: "anon/xoq")
     ///     token: Optional JWT authentication token
     ///     relay: Relay URL (default: "https://cdn.moq.dev")
     #[new]
     #[pyo3(signature = (path=None, token=None, relay=None))]
     fn new(path: Option<&str>, token: Option<&str>, relay: Option<&str>) -> PyResult<Self> {
         let relay_url = relay.unwrap_or("https://cdn.moq.dev");
-        let path = path.unwrap_or("anon/wser");
+        let path = path.unwrap_or("anon/xoq");
 
         runtime().block_on(async {
-            let mut builder = wser_lib::MoqBuilder::new().relay(relay_url).path(path);
+            let mut builder = xoq_lib::MoqBuilder::new().relay(relay_url).path(path);
             if let Some(t) = token {
                 builder = builder.token(t);
             }
@@ -92,7 +92,7 @@ impl MoqConnection {
 /// A publish-only MoQ connection
 #[pyclass]
 struct MoqPublisher {
-    inner: Arc<Mutex<wser_lib::MoqPublisher>>,
+    inner: Arc<Mutex<xoq_lib::MoqPublisher>>,
 }
 
 #[pymethods]
@@ -100,17 +100,17 @@ impl MoqPublisher {
     /// Connect as publisher only
     ///
     /// Args:
-    ///     path: Path on the relay (default: "anon/wser")
+    ///     path: Path on the relay (default: "anon/xoq")
     ///     token: Optional JWT authentication token
     ///     relay: Relay URL (default: "https://cdn.moq.dev")
     #[new]
     #[pyo3(signature = (path=None, token=None, relay=None))]
     fn new(path: Option<&str>, token: Option<&str>, relay: Option<&str>) -> PyResult<Self> {
         let relay_url = relay.unwrap_or("https://cdn.moq.dev");
-        let path = path.unwrap_or("anon/wser");
+        let path = path.unwrap_or("anon/xoq");
 
         runtime().block_on(async {
-            let mut builder = wser_lib::MoqBuilder::new().relay(relay_url).path(path);
+            let mut builder = xoq_lib::MoqBuilder::new().relay(relay_url).path(path);
             if let Some(t) = token {
                 builder = builder.token(t);
             }
@@ -141,7 +141,7 @@ impl MoqPublisher {
 /// A subscribe-only MoQ connection
 #[pyclass]
 struct MoqSubscriber {
-    inner: Arc<Mutex<wser_lib::MoqSubscriber>>,
+    inner: Arc<Mutex<xoq_lib::MoqSubscriber>>,
 }
 
 #[pymethods]
@@ -149,17 +149,17 @@ impl MoqSubscriber {
     /// Connect as subscriber only
     ///
     /// Args:
-    ///     path: Path on the relay (default: "anon/wser")
+    ///     path: Path on the relay (default: "anon/xoq")
     ///     token: Optional JWT authentication token
     ///     relay: Relay URL (default: "https://cdn.moq.dev")
     #[new]
     #[pyo3(signature = (path=None, token=None, relay=None))]
     fn new(path: Option<&str>, token: Option<&str>, relay: Option<&str>) -> PyResult<Self> {
         let relay_url = relay.unwrap_or("https://cdn.moq.dev");
-        let path = path.unwrap_or("anon/wser");
+        let path = path.unwrap_or("anon/xoq");
 
         runtime().block_on(async {
-            let mut builder = wser_lib::MoqBuilder::new().relay(relay_url).path(path);
+            let mut builder = xoq_lib::MoqBuilder::new().relay(relay_url).path(path);
             if let Some(t) = token {
                 builder = builder.token(t);
             }
@@ -194,7 +194,7 @@ impl MoqSubscriber {
 /// A track writer for publishing data
 #[pyclass]
 struct MoqTrackWriter {
-    inner: Arc<Mutex<wser_lib::MoqTrackWriter>>,
+    inner: Arc<Mutex<xoq_lib::MoqTrackWriter>>,
 }
 
 #[pymethods]
@@ -221,7 +221,7 @@ impl MoqTrackWriter {
 /// A track reader for receiving data
 #[pyclass]
 struct MoqTrackReader {
-    inner: Arc<Mutex<wser_lib::MoqTrackReader>>,
+    inner: Arc<Mutex<xoq_lib::MoqTrackReader>>,
 }
 
 #[pymethods]
@@ -262,7 +262,7 @@ mod iroh_bindings {
     /// An iroh server that accepts connections
     #[pyclass]
     pub struct IrohServer {
-        inner: Arc<wser_lib::IrohServer>,
+        inner: Arc<xoq_lib::IrohServer>,
     }
 
     #[pymethods]
@@ -271,14 +271,14 @@ mod iroh_bindings {
         ///
         /// Args:
         ///     identity_path: Path to save/load server identity key
-        ///     alpn: Custom ALPN protocol bytes (default: b"wser/p2p/0")
+        ///     alpn: Custom ALPN protocol bytes (default: b"xoq/p2p/0")
         #[new]
         #[pyo3(signature = (identity_path=None, alpn=None))]
         fn new(identity_path: Option<&str>, alpn: Option<Vec<u8>>) -> PyResult<Self> {
-            let alpn = alpn.unwrap_or_else(|| b"wser/p2p/0".to_vec());
+            let alpn = alpn.unwrap_or_else(|| b"xoq/p2p/0".to_vec());
 
             runtime().block_on(async {
-                let mut builder = wser_lib::IrohServerBuilder::new().alpn(&alpn);
+                let mut builder = xoq_lib::IrohServerBuilder::new().alpn(&alpn);
                 if let Some(path) = identity_path {
                     builder = builder.identity_path(path);
                 }
@@ -316,7 +316,7 @@ mod iroh_bindings {
     /// An iroh connection (either server or client side)
     #[pyclass]
     pub struct IrohConnection {
-        inner: Arc<wser_lib::IrohConnection>,
+        inner: Arc<xoq_lib::IrohConnection>,
     }
 
     #[pymethods]
@@ -325,14 +325,14 @@ mod iroh_bindings {
         ///
         /// Args:
         ///     server_id: The server's endpoint ID string
-        ///     alpn: Custom ALPN protocol bytes (default: b"wser/p2p/0")
+        ///     alpn: Custom ALPN protocol bytes (default: b"xoq/p2p/0")
         #[new]
         #[pyo3(signature = (server_id, alpn=None))]
         fn new(server_id: &str, alpn: Option<Vec<u8>>) -> PyResult<Self> {
-            let alpn = alpn.unwrap_or_else(|| b"wser/p2p/0".to_vec());
+            let alpn = alpn.unwrap_or_else(|| b"xoq/p2p/0".to_vec());
 
             runtime().block_on(async {
-                let conn = wser_lib::IrohClientBuilder::new()
+                let conn = xoq_lib::IrohClientBuilder::new()
                     .alpn(&alpn)
                     .connect_str(server_id)
                     .await
@@ -383,7 +383,7 @@ mod iroh_bindings {
     /// A bidirectional stream
     #[pyclass]
     pub struct IrohStream {
-        inner: Arc<Mutex<wser_lib::IrohStream>>,
+        inner: Arc<Mutex<xoq_lib::IrohStream>>,
     }
 
     #[pymethods]
@@ -451,7 +451,7 @@ mod serial_bindings {
     /// List available serial ports
     #[pyfunction]
     pub fn list_ports() -> PyResult<Vec<SerialPortInfo>> {
-        let ports = wser_lib::list_ports().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let ports = xoq_lib::list_ports().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         Ok(ports
             .into_iter()
@@ -475,7 +475,7 @@ mod serial_bindings {
     /// A serial port connection
     #[pyclass]
     pub struct SerialPort {
-        inner: Arc<Mutex<wser_lib::SerialPort>>,
+        inner: Arc<Mutex<xoq_lib::SerialPort>>,
     }
 
     #[pymethods]
@@ -488,7 +488,7 @@ mod serial_bindings {
         #[new]
         #[pyo3(signature = (port, baud_rate=115200))]
         fn new(port: &str, baud_rate: u32) -> PyResult<Self> {
-            let serial = wser_lib::SerialPort::open_simple(port, baud_rate)
+            let serial = xoq_lib::SerialPort::open_simple(port, baud_rate)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
             Ok(SerialPort {
@@ -552,7 +552,7 @@ mod bridge_bindings {
     /// All forwarding is handled internally in Rust.
     #[pyclass]
     pub struct Server {
-        inner: Arc<wser_lib::Server>,
+        inner: Arc<xoq_lib::Server>,
     }
 
     #[pymethods]
@@ -567,7 +567,7 @@ mod bridge_bindings {
         #[pyo3(signature = (port, baud_rate=115200, identity_path=None))]
         fn new(port: &str, baud_rate: u32, identity_path: Option<&str>) -> PyResult<Self> {
             runtime().block_on(async {
-                let server = wser_lib::Server::new(port, baud_rate, identity_path)
+                let server = xoq_lib::Server::new(port, baud_rate, identity_path)
                     .await
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -606,7 +606,7 @@ mod bridge_bindings {
     /// A client that connects to a remote serial port over iroh P2P.
     #[pyclass]
     pub struct Client {
-        inner: Arc<wser_lib::Client>,
+        inner: Arc<xoq_lib::Client>,
     }
 
     #[pymethods]
@@ -618,7 +618,7 @@ mod bridge_bindings {
         #[new]
         fn new(server_id: &str) -> PyResult<Self> {
             runtime().block_on(async {
-                let client = wser_lib::Client::connect(server_id)
+                let client = xoq_lib::Client::connect(server_id)
                     .await
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -688,12 +688,12 @@ mod bridge_bindings {
     /// Drop-in replacement for serial.Serial that connects over iroh P2P.
     ///
     /// Example:
-    ///     ser = wser.Serial('abc123...')  # server endpoint id
+    ///     ser = xoq.Serial('abc123...')  # server endpoint id
     ///     ser.write(b'AT\r\n')
     ///     response = ser.readline()
     #[pyclass]
     pub struct Serial {
-        inner: Arc<wser_lib::Client>,
+        inner: Arc<xoq_lib::Client>,
         buffer: Arc<std::sync::Mutex<Vec<u8>>>,
         is_open: Arc<std::sync::atomic::AtomicBool>,
         timeout: Option<f64>,
@@ -712,7 +712,7 @@ mod bridge_bindings {
         fn new(port: &str, timeout: Option<f64>) -> PyResult<Self> {
             let port_name = port.to_string();
             runtime().block_on(async {
-                let client = wser_lib::Client::connect(port)
+                let client = xoq_lib::Client::connect(port)
                     .await
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -949,7 +949,7 @@ mod bridge_bindings {
 }
 
 #[pymodule]
-fn wser(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn xoq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // MoQ classes
     m.add_class::<MoqConnection>()?;
     m.add_class::<MoqPublisher>()?;

@@ -2,20 +2,20 @@
 members = [".", "python"]
 
 [package]
-name = "wser"
+name = "xoq"
 version = "0.1.0"
 edition = "2021"
 
 [features]
 default = []
 iroh = ["dep:iroh"]
-serial = ["dep:tokio-serial"]
+serial = ["dep:serialport"]
 
 [dependencies]
 moq-transport = "0.12"
 moq-token = "0.5"
 iroh = { version = "0.95", optional = true }
-tokio-serial = { version = "5.4", optional = true }
+serialport = { version = "4", optional = true }
 moq-native = "0.11"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
@@ -24,6 +24,9 @@ tracing-subscriber = "0.3"
 url = "2"
 bytes = "1"
 rand = "0.9"
+
+[dev-dependencies]
+rustypot = "1.4.2"
 
 [[example]]
 name = "serial_server"
@@ -44,3 +47,13 @@ required-features = ["iroh", "serial"]
 name = "list_ports"
 path = "examples/list_ports.rs"
 required-features = ["serial"]
+
+[[example]]
+name = "serial_test"
+path = "examples/serial_test.rs"
+required-features = ["serial"]
+
+[[example]]
+name = "rustypot_remote"
+path = "examples/rustypot_remote.rs"
+required-features = ["iroh", "serial"]

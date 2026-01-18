@@ -1,18 +1,18 @@
 [package]
-name = "wser-python"
+name = "xoq-python"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "wser"
+name = "xoq"
 crate-type = ["cdylib"]
 
 [features]
 default = []
-iroh = ["wser/iroh"]
-serial = ["wser/serial"]
+iroh = ["xoq/iroh"]
+serial = ["xoq/serial"]
 
 [dependencies]
-wser = { path = ".." }
+xoq = { path = ".." }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }

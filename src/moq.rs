@@ -22,7 +22,7 @@ impl MoqBuilder {
         Self {
             relay_url: "https://cdn.moq.dev".to_string(),
             token: None,
-            path: "anon/wser".to_string(),
+            path: "anon/xoq".to_string(),
         }
     }
 

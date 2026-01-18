@@ -10,7 +10,7 @@
 //! and `std::io::Write` traits for seamless integration with existing code.
 //!
 //! ```no_run
-//! use wser::RemoteSerialPort;
+//! use xoq::RemoteSerialPort;
 //! use std::io::{Read, Write};
 //!
 //! let mut port = RemoteSerialPort::open("server-endpoint-id")?;
@@ -26,13 +26,15 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::iroh::{IrohClientBuilder, IrohConnection, IrohServerBuilder};
-use crate::serial::{SerialPort, SerialReader, SerialWriter};
+use crate::serial::SerialPort;
 
 /// A server that bridges a local serial port to remote clients over iroh P2P
 pub struct Server {
     server_id: String,
-    serial_reader: Arc<Mutex<SerialReader>>,
-    serial_writer: Arc<Mutex<SerialWriter>>,
+    /// Sender for data to write to serial port
+    serial_write_tx: std::sync::mpsc::Sender<Vec<u8>>,
+    /// Receiver for data read from serial port
+    serial_read_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>,
     endpoint: Arc<crate::iroh::IrohServer>,
 }
 
@@ -44,9 +46,61 @@ impl Server {
     ///     baud_rate: Baud rate (e.g., 115200)
     ///     identity_path: Optional path to save/load server identity
     pub async fn new(port: &str, baud_rate: u32, identity_path: Option<&str>) -> Result<Self> {
-        // Open serial port
+        // Open serial port and split
         let serial = SerialPort::open_simple(port, baud_rate)?;
-        let (reader, writer) = serial.split();
+        let (mut reader, mut writer) = serial.split();
+
+        // Create channels for serial I/O
+        // tokio channel for serial->network (async receiver)
+        let (serial_read_tx, serial_read_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        // std channel for network->serial (blocking writer thread)
+        let (serial_write_tx, serial_write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+
+        // Spawn dedicated reader thread that continuously polls serial
+        let read_tx = serial_read_tx;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let mut buf = [0u8; 1024];
+                loop {
+                    match reader.read(&mut buf).await {
+                        Ok(n) if n > 0 => {
+                            tracing::debug!("Serial read {} bytes", n);
+                            if read_tx.send(buf[..n].to_vec()).await.is_err() {
+                                break; // Channel closed
+                            }
+                        }
+                        Ok(_) => {
+                            // 0 bytes - timeout, keep polling
+                        }
+                        Err(e) => {
+                            tracing::error!("Serial read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+
+        // Spawn dedicated writer thread
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                while let Ok(data) = serial_write_rx.recv() {
+                    if let Err(e) = writer.write_all(&data).await {
+                        tracing::error!("Serial write error: {}", e);
+                        break;
+                    }
+                    tracing::debug!("Wrote {} bytes to serial", data.len());
+                }
+            });
+        });
 
         // Start iroh server
         let mut builder = IrohServerBuilder::new();
@@ -58,8 +112,8 @@ impl Server {
 
         Ok(Self {
             server_id,
-            serial_reader: Arc::new(Mutex::new(reader)),
-            serial_writer: Arc::new(Mutex::new(writer)),
+            serial_write_tx,
+            serial_read_rx: Arc::new(Mutex::new(serial_read_rx)),
             endpoint: Arc::new(server),
         })
     }
@@ -116,51 +170,53 @@ impl Server {
     }
 
     async fn handle_connection(&self, conn: IrohConnection) -> Result<()> {
-        let stream = conn.accept_stream().await?;
-        let stream = Arc::new(Mutex::new(stream));
+        tracing::debug!("Waiting for client to open stream...");
+        let stream = conn.accept_stream().await
+            .map_err(|e| anyhow::anyhow!("Failed to accept stream: {}", e))?;
+        tracing::debug!("Stream accepted, starting bridge");
+        // Split the stream so reads and writes don't block each other
+        let (mut send, mut recv) = stream.split();
 
-        let serial_reader = self.serial_reader.clone();
-        let serial_writer = self.serial_writer.clone();
-        let stream_clone = stream.clone();
+        let serial_read_rx = self.serial_read_rx.clone();
+        let serial_write_tx = self.serial_write_tx.clone();
 
-        // Spawn task: serial -> network
+        // Spawn task: serial -> network (event-driven via channel)
         let serial_to_net = tokio::spawn(async move {
-            let mut buf = [0u8; 1024];
-            loop {
-                let n = {
-                    let mut reader = serial_reader.lock().await;
-                    match reader.read(&mut buf).await {
-                        Ok(n) if n > 0 => n,
-                        Ok(_) => break,
-                        Err(e) => {
-                            tracing::debug!("Serial read error: {}", e);
-                            break;
-                        }
-                    }
-                };
-
-                let mut s = stream_clone.lock().await;
-                if s.write(&buf[..n]).await.is_err() {
+            tracing::debug!("Serial->Network bridge task started");
+            let mut rx = serial_read_rx.lock().await;
+            while let Some(data) = rx.recv().await {
+                tracing::debug!("Serial -> Network: {} bytes", data.len());
+                if let Err(e) = send.write_all(&data).await {
+                    tracing::debug!("Network write error: {}", e);
                     break;
                 }
             }
+            tracing::debug!("Serial->Network bridge task ended");
         });
 
         // Main task: network -> serial
         let mut buf = vec![0u8; 1024];
         loop {
-            let data = {
-                let mut s = stream.lock().await;
-                match s.read(&mut buf).await {
-                    Ok(Some(n)) if n > 0 => buf[..n].to_vec(),
-                    Ok(_) => break,
-                    Err(_) => break,
+            match recv.read(&mut buf).await {
+                Ok(Some(n)) if n > 0 => {
+                    tracing::debug!("Network -> Serial: {} bytes: {:?}", n, String::from_utf8_lossy(&buf[..n]));
+                    if serial_write_tx.send(buf[..n].to_vec()).is_err() {
+                        tracing::error!("Serial writer thread died");
+                        break;
+                    }
                 }
-            };
-
-            let mut writer = serial_writer.lock().await;
-            if writer.write_all(&data).await.is_err() {
-                break;
+                Ok(Some(_)) => {
+                    // 0 bytes from network - keep waiting
+                    continue;
+                }
+                Ok(None) => {
+                    tracing::info!("Client disconnected (stream closed)");
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("Network read error: {}", e);
+                    break;
+                }
             }
         }
 
@@ -171,65 +227,91 @@ impl Server {
 
 /// A client that connects to a remote serial port over iroh P2P
 pub struct Client {
-    stream: Arc<Mutex<crate::iroh::IrohStream>>,
+    send: Arc<Mutex<iroh::endpoint::SendStream>>,
+    recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
     _conn: IrohConnection,
 }
 
 impl Client {
     /// Connect to a remote serial bridge server
     pub async fn connect(server_id: &str) -> Result<Self> {
-        let conn = IrohClientBuilder::new().connect_str(server_id).await?;
-        let stream = conn.open_stream().await?;
+        tracing::debug!("Connecting to server: {}", server_id);
+        let conn = IrohClientBuilder::new().connect_str(server_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to server: {}", e))?;
+        tracing::debug!("Connected to server, opening stream...");
+        let stream = conn.open_stream().await
+            .map_err(|e| anyhow::anyhow!("Failed to open stream: {}", e))?;
+        tracing::debug!("Stream opened successfully");
+        // Split stream so reads and writes don't block each other
+        let (send, recv) = stream.split();
 
         Ok(Self {
-            stream: Arc::new(Mutex::new(stream)),
+            send: Arc::new(Mutex::new(send)),
+            recv: Arc::new(Mutex::new(recv)),
             _conn: conn,
         })
     }
 
     /// Write data to the remote serial port
     pub async fn write(&self, data: &[u8]) -> Result<()> {
-        let mut stream = self.stream.lock().await;
-        stream.write(data).await
+        let mut send = self.send.lock().await;
+        send.write_all(data).await?;
+        Ok(())
     }
 
     /// Write a string to the remote serial port
     pub async fn write_str(&self, data: &str) -> Result<()> {
-        let mut stream = self.stream.lock().await;
-        stream.write_str(data).await
+        self.write(data.as_bytes()).await
     }
 
     /// Read data from the remote serial port
     pub async fn read(&self, buf: &mut [u8]) -> Result<Option<usize>> {
-        let mut stream = self.stream.lock().await;
-        stream.read(buf).await
+        let mut recv = self.recv.lock().await;
+        Ok(recv.read(buf).await?)
     }
 
     /// Read a string from the remote serial port
     pub async fn read_string(&self) -> Result<Option<String>> {
-        let mut stream = self.stream.lock().await;
-        stream.read_string().await
+        let mut buf = vec![0u8; 4096];
+        if let Some(n) = self.read(&mut buf).await? {
+            return Ok(Some(String::from_utf8_lossy(&buf[..n]).to_string()));
+        }
+        Ok(None)
     }
 
     /// Run an interactive bridge to local stdin/stdout
     pub async fn run_interactive(&self) -> Result<()> {
         use std::io::{Read, Write};
 
-        let stream = self.stream.clone();
+        let recv = self.recv.clone();
+        let send = self.send.clone();
 
         // Spawn task: network -> stdout
-        let stream_clone = stream.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 1024];
             loop {
-                let data = {
-                    let mut s = stream_clone.lock().await;
-                    match s.read(&mut buf).await {
-                        Ok(Some(n)) if n > 0 => buf[..n].to_vec(),
-                        _ => break,
+                let n = {
+                    let mut r = recv.lock().await;
+                    match r.read(&mut buf).await {
+                        Ok(Some(n)) if n > 0 => {
+                            tracing::debug!("Received {} bytes from network", n);
+                            n
+                        }
+                        Ok(Some(_)) => {
+                            tracing::debug!("Received 0 bytes (EOF)");
+                            break;
+                        }
+                        Ok(None) => {
+                            tracing::debug!("Stream closed");
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::debug!("Network read error: {}", e);
+                            break;
+                        }
                     }
                 };
-                let _ = std::io::stdout().write_all(&data);
+                let _ = std::io::stdout().write_all(&buf[..n]);
                 let _ = std::io::stdout().flush();
             }
         });
@@ -247,10 +329,13 @@ impl Client {
 
             match result {
                 Some(data) => {
-                    let mut s = stream.lock().await;
-                    if s.write(&data).await.is_err() {
+                    tracing::debug!("Sending {} bytes to network: {:?}", data.len(), String::from_utf8_lossy(&data));
+                    let mut s = send.lock().await;
+                    if let Err(e) = s.write_all(&data).await {
+                        tracing::debug!("Network write error: {}", e);
                         break;
                     }
+                    tracing::debug!("Sent successfully");
                 }
                 None => break,
             }
@@ -290,7 +375,7 @@ impl Default for Transport {
 /// # Example
 ///
 /// ```no_run
-/// use wser::serialport;
+/// use xoq::serialport;
 /// use std::time::Duration;
 ///
 /// // Simple iroh P2P connection (default)
@@ -423,7 +508,7 @@ enum ClientInner {
 /// # Example
 ///
 /// ```no_run
-/// use wser::serialport;
+/// use xoq::serialport;
 ///
 /// // Drop-in replacement for serialport crate
 /// let port = serialport::new("server-endpoint-id").open()?;
@@ -442,7 +527,7 @@ pub fn new(port: &str) -> SerialPortBuilder {
 /// # Example
 ///
 /// ```no_run
-/// use wser::serialport;
+/// use xoq::serialport;
 /// use std::io::{BufRead, BufReader, Write};
 ///
 /// // Iroh P2P (default)
@@ -470,7 +555,7 @@ pub struct RemoteSerialPort {
 impl RemoteSerialPort {
     /// Open a connection to a remote serial port via iroh P2P.
     ///
-    /// Prefer using `wser::serialport::new(port).open()` for more options.
+    /// Prefer using `xoq::serialport::new(port).open()` for more options.
     pub fn open(port: &str) -> Result<Self> {
         new(port).open()
     }

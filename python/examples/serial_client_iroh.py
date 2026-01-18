@@ -6,7 +6,7 @@ Usage: serial_client_iroh.py <server-endpoint-id>
 
 import sys
 import threading
-import wser
+import xoq
 
 def main():
     if len(sys.argv) < 2:
@@ -17,7 +17,7 @@ def main():
     print(f"Connecting to server: {server_id}")
 
     # Connect to the remote serial port
-    client = wser.Client(server_id)
+    client = xoq.Client(server_id)
     print("Connected!")
     print("Type to send, Ctrl+C to exit.\n")
 

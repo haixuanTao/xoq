@@ -1,4 +1,4 @@
-//! wser - WebTransport Serial Library
+//! xoq - X-Embodiment over QUIC
 //!
 //! A library for building P2P and relay-based communication using either
 //! MoQ (Media over QUIC) or iroh for direct peer-to-peer connections.
@@ -8,7 +8,7 @@
 //! ## MoQ (via relay)
 //!
 //! ```no_run
-//! use wser::moq::MoqBuilder;
+//! use xoq::moq::MoqBuilder;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Simple anonymous connection
@@ -30,7 +30,7 @@
 //! ## Iroh (P2P)
 //!
 //! ```no_run
-//! use wser::iroh::{IrohServerBuilder, IrohClientBuilder};
+//! use xoq::iroh::{IrohServerBuilder, IrohClientBuilder};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Server with persistent identity
@@ -84,7 +84,7 @@ pub use serial_bridge::{Client, RemoteSerialPort, Server};
 ///
 /// ```no_run
 /// // Instead of: use serialport;
-/// use wser::serialport;
+/// use xoq::serialport;
 ///
 /// // Same API as serialport crate
 /// let mut port = serialport::new("server-endpoint-id").open()?;

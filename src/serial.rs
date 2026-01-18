@@ -1,11 +1,11 @@
 //! Cross-platform serial port support.
 //!
-//! This module provides async serial port access using [`tokio-serial`](https://crates.io/crates/tokio-serial),
+//! This module provides serial port access using the [`serialport`](https://crates.io/crates/serialport) crate,
 //! which works on Linux, macOS, and Windows.
 //!
 //! # Features
 //!
-//! - Async read/write operations via tokio
+//! - Blocking I/O on dedicated threads (doesn't block tokio runtime)
 //! - Configurable baud rate, data bits, parity, and stop bits
 //! - Split into separate read/write halves for concurrent access
 //! - Port enumeration to list available serial ports
@@ -13,46 +13,22 @@
 //! # Example
 //!
 //! ```no_run
-//! use wser::serial::{SerialPort, SerialConfig, baud};
+//! use xoq::serial::{SerialPort, SerialConfig, baud};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Simple open with defaults (8N1)
-//! let mut port = SerialPort::open_simple("/dev/ttyUSB0", baud::B115200)?;
+//! let port = SerialPort::open_simple("/dev/ttyUSB0", baud::B115200)?;
 //!
-//! // Write data
-//! port.write_str("AT\r\n").await?;
+//! // Split for concurrent read/write
+//! let (mut reader, mut writer) = port.split();
+//!
+//! // Write data (async, but uses dedicated thread internally)
+//! writer.write_all(b"AT\r\n").await?;
 //!
 //! // Read response
 //! let mut buf = [0u8; 256];
-//! let n = port.read(&mut buf).await?;
+//! let n = reader.read(&mut buf).await?;
 //! println!("Received: {:?}", &buf[..n]);
-//!
-//! // Or use full configuration
-//! let config = SerialConfig::new("/dev/ttyUSB0", 115200);
-//! let port = SerialPort::open(&config)?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # Splitting for Concurrent Access
-//!
-//! ```no_run
-//! use wser::serial::SerialPort;
-//!
-//! # async fn example() -> anyhow::Result<()> {
-//! let port = SerialPort::open_simple("/dev/ttyUSB0", 115200)?;
-//! let (mut reader, mut writer) = port.split();
-//!
-//! // Now reader and writer can be used from different tasks
-//! tokio::spawn(async move {
-//!     let mut buf = [0u8; 256];
-//!     loop {
-//!         let n = reader.read(&mut buf).await.unwrap();
-//!         println!("Received: {:?}", &buf[..n]);
-//!     }
-//! });
-//!
-//! writer.write_str("Hello\r\n").await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -60,7 +36,7 @@
 //! # Listing Available Ports
 //!
 //! ```no_run
-//! use wser::serial::list_ports;
+//! use xoq::serial::list_ports;
 //!
 //! for port in list_ports()? {
 //!     println!("{} - {:?}", port.name, port.port_type);
@@ -69,15 +45,17 @@
 //! ```
 
 use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use std::io::{Read, Write};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 /// Common baud rates as constants.
 ///
 /// # Example
 ///
 /// ```
-/// use wser::serial::baud;
+/// use xoq::serial::baud;
 ///
 /// let rate = baud::B115200; // 115200 bps
 /// ```
@@ -108,7 +86,7 @@ pub mod baud {
 /// # Example
 ///
 /// ```
-/// use wser::serial::{SerialConfig, DataBits, Parity, StopBits};
+/// use xoq::serial::{SerialConfig, DataBits, Parity, StopBits};
 ///
 /// // Simple config with defaults (8N1)
 /// let config = SerialConfig::new("/dev/ttyUSB0", 115200);
@@ -167,13 +145,13 @@ pub enum DataBits {
     Eight,
 }
 
-impl From<DataBits> for tokio_serial::DataBits {
+impl From<DataBits> for serialport::DataBits {
     fn from(db: DataBits) -> Self {
         match db {
-            DataBits::Five => tokio_serial::DataBits::Five,
-            DataBits::Six => tokio_serial::DataBits::Six,
-            DataBits::Seven => tokio_serial::DataBits::Seven,
-            DataBits::Eight => tokio_serial::DataBits::Eight,
+            DataBits::Five => serialport::DataBits::Five,
+            DataBits::Six => serialport::DataBits::Six,
+            DataBits::Seven => serialport::DataBits::Seven,
+            DataBits::Eight => serialport::DataBits::Eight,
         }
     }
 }
@@ -192,12 +170,12 @@ pub enum Parity {
     Even,
 }
 
-impl From<Parity> for tokio_serial::Parity {
+impl From<Parity> for serialport::Parity {
     fn from(p: Parity) -> Self {
         match p {
-            Parity::None => tokio_serial::Parity::None,
-            Parity::Odd => tokio_serial::Parity::Odd,
-            Parity::Even => tokio_serial::Parity::Even,
+            Parity::None => serialport::Parity::None,
+            Parity::Odd => serialport::Parity::Odd,
+            Parity::Even => serialport::Parity::Even,
         }
     }
 }
@@ -214,52 +192,46 @@ pub enum StopBits {
     Two,
 }
 
-impl From<StopBits> for tokio_serial::StopBits {
+impl From<StopBits> for serialport::StopBits {
     fn from(sb: StopBits) -> Self {
         match sb {
-            StopBits::One => tokio_serial::StopBits::One,
-            StopBits::Two => tokio_serial::StopBits::Two,
+            StopBits::One => serialport::StopBits::One,
+            StopBits::Two => serialport::StopBits::Two,
         }
     }
 }
 
-/// An async serial port connection.
+/// A serial port that can be split into read/write halves.
 ///
-/// Provides async read/write access to a serial port. Can be split into
-/// separate [`SerialReader`] and [`SerialWriter`] halves for concurrent access.
+/// Uses blocking I/O on dedicated threads to avoid blocking the tokio runtime.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use wser::serial::SerialPort;
+/// use xoq::serial::SerialPort;
 ///
-/// # async fn example() -> anyhow::Result<()> {
-/// let mut port = SerialPort::open_simple("/dev/ttyUSB0", 115200)?;
-///
-/// // Write a command
-/// port.write_str("AT\r\n").await?;
-///
-/// // Read response
-/// let mut buf = [0u8; 256];
-/// let n = port.read(&mut buf).await?;
-/// println!("Response: {}", String::from_utf8_lossy(&buf[..n]));
+/// # fn example() -> anyhow::Result<()> {
+/// let port = SerialPort::open_simple("/dev/ttyUSB0", 115200)?;
+/// let (reader, writer) = port.split();
+/// // Use reader and writer from different tasks
 /// # Ok(())
 /// # }
 /// ```
 pub struct SerialPort {
-    inner: SerialStream,
+    port: Box<dyn serialport::SerialPort>,
 }
 
 impl SerialPort {
     /// Open a serial port with the given configuration.
     pub fn open(config: &SerialConfig) -> Result<Self> {
-        let port = tokio_serial::new(&config.port, config.baud_rate)
+        let port = serialport::new(&config.port, config.baud_rate)
             .data_bits(config.data_bits.into())
             .parity(config.parity.into())
             .stop_bits(config.stop_bits.into())
-            .open_native_async()?;
+            .timeout(Duration::from_millis(100)) // Short timeout for responsive reads
+            .open()?;
 
-        Ok(Self { inner: port })
+        Ok(Self { port })
     }
 
     /// Open a serial port with default settings (8N1)
@@ -268,69 +240,164 @@ impl SerialPort {
         Self::open(&config)
     }
 
-    /// Write data to the serial port
-    pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
-        let n = self.inner.write(data).await?;
-        Ok(n)
-    }
-
-    /// Write all data to the serial port
-    pub async fn write_all(&mut self, data: &[u8]) -> Result<()> {
-        self.inner.write_all(data).await?;
-        Ok(())
-    }
-
-    /// Write a string to the serial port
-    pub async fn write_str(&mut self, data: &str) -> Result<()> {
-        self.write_all(data.as_bytes()).await
-    }
-
-    /// Read data from the serial port
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let n = self.inner.read(buf).await?;
-        Ok(n)
-    }
-
-    /// Read until buffer is full or EOF
-    pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-        self.inner.read_exact(buf).await?;
-        Ok(())
-    }
-
-    /// Split into read and write halves
+    /// Split into read and write halves.
+    ///
+    /// Each half runs blocking I/O on dedicated threads, communicating via channels.
+    /// This allows concurrent reading and writing without blocking the tokio runtime.
     pub fn split(self) -> (SerialReader, SerialWriter) {
-        let (reader, writer) = tokio::io::split(self.inner);
+        let reader_port = self.port.try_clone().expect("Failed to clone serial port");
+        let writer_port = self.port;
+
+        // Create channels for async bridge
+        let (read_tx, read_rx) = mpsc::channel::<ReadResult>();
+        let (read_cmd_tx, read_cmd_rx) = mpsc::channel::<ReadCommand>();
+        let (write_tx, write_rx) = mpsc::channel::<WriteCommand>();
+        let (write_result_tx, write_result_rx) = mpsc::channel::<WriteResult>();
+
+        // Spawn reader thread
+        thread::spawn(move || {
+            let mut port = reader_port;
+            while let Ok(cmd) = read_cmd_rx.recv() {
+                match cmd {
+                    ReadCommand::Read(size) => {
+                        let mut buf = vec![0u8; size];
+                        match port.read(&mut buf) {
+                            Ok(n) => {
+                                buf.truncate(n);
+                                if read_tx.send(ReadResult::Data(buf)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                                // Timeout - no data available
+                                if read_tx.send(ReadResult::Data(vec![])).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                if read_tx.send(ReadResult::Error(e.to_string())).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    ReadCommand::Stop => break,
+                }
+            }
+        });
+
+        // Spawn writer thread
+        thread::spawn(move || {
+            let mut port = writer_port;
+            while let Ok(cmd) = write_rx.recv() {
+                match cmd {
+                    WriteCommand::Write(data) => {
+                        let result = port.write_all(&data).and_then(|_| port.flush());
+                        let _ = write_result_tx.send(match result {
+                            Ok(()) => WriteResult::Ok,
+                            Err(e) => WriteResult::Error(e.to_string()),
+                        });
+                    }
+                    WriteCommand::Stop => break,
+                }
+            }
+        });
+
         (
-            SerialReader { inner: reader },
-            SerialWriter { inner: writer },
+            SerialReader {
+                read_rx,
+                read_cmd_tx,
+            },
+            SerialWriter {
+                write_tx,
+                write_result_rx,
+            },
         )
     }
 }
 
+// Internal message types for thread communication
+enum ReadCommand {
+    Read(usize),
+    Stop,
+}
+
+enum ReadResult {
+    Data(Vec<u8>),
+    Error(String),
+}
+
+enum WriteCommand {
+    Write(Vec<u8>),
+    Stop,
+}
+
+enum WriteResult {
+    Ok,
+    Error(String),
+}
+
 /// Read half of a split serial port.
 ///
-/// Obtained by calling [`SerialPort::split`]. Can be used concurrently
-/// with [`SerialWriter`] from different tasks.
+/// Uses a dedicated thread for blocking reads, bridged to async via channels.
 pub struct SerialReader {
-    inner: tokio::io::ReadHalf<SerialStream>,
+    read_rx: mpsc::Receiver<ReadResult>,
+    read_cmd_tx: mpsc::Sender<ReadCommand>,
 }
 
 impl SerialReader {
     /// Read data from the serial port.
     ///
-    /// Returns the number of bytes read.
+    /// Returns the number of bytes read. Returns 0 if no data is available
+    /// (timeout). This is non-blocking from tokio's perspective.
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let n = self.inner.read(buf).await?;
-        Ok(n)
+        // Send read command to dedicated thread
+        self.read_cmd_tx
+            .send(ReadCommand::Read(buf.len()))
+            .map_err(|_| anyhow::anyhow!("Serial reader thread died"))?;
+
+        // Wait for result (using spawn_blocking to not block tokio)
+        let rx = unsafe {
+            // SAFETY: We're moving the receiver to spawn_blocking and back.
+            // This is safe because we wait for the result before using rx again.
+            std::ptr::read(&self.read_rx)
+        };
+
+        let (result, rx) = tokio::task::spawn_blocking(move || {
+            let result = rx.recv();
+            (result, rx)
+        })
+        .await?;
+
+        // Restore receiver
+        unsafe {
+            std::ptr::write(&mut self.read_rx, rx);
+        }
+
+        match result {
+            Ok(ReadResult::Data(data)) => {
+                let n = std::cmp::min(data.len(), buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                Ok(n)
+            }
+            Ok(ReadResult::Error(e)) => Err(anyhow::anyhow!("Serial read error: {}", e)),
+            Err(_) => Err(anyhow::anyhow!("Serial reader thread died")),
+        }
+    }
+}
+
+impl Drop for SerialReader {
+    fn drop(&mut self) {
+        let _ = self.read_cmd_tx.send(ReadCommand::Stop);
     }
 }
 
 /// Write half of a split serial port.
 ///
-/// Obtained by calling [`SerialPort::split`]. Can be used concurrently
-/// with [`SerialReader`] from different tasks.
+/// Uses a dedicated thread for blocking writes, bridged to async via channels.
 pub struct SerialWriter {
-    inner: tokio::io::WriteHalf<SerialStream>,
+    write_tx: mpsc::Sender<WriteCommand>,
+    write_result_rx: mpsc::Receiver<WriteResult>,
 }
 
 impl SerialWriter {
@@ -338,21 +405,53 @@ impl SerialWriter {
     ///
     /// Returns the number of bytes written.
     pub async fn write(&mut self, data: &[u8]) -> Result<usize> {
-        let n = self.inner.write(data).await?;
-        Ok(n)
+        self.write_all(data).await?;
+        Ok(data.len())
     }
 
     /// Write all data to the serial port.
-    ///
-    /// Continues writing until all bytes are sent.
     pub async fn write_all(&mut self, data: &[u8]) -> Result<()> {
-        self.inner.write_all(data).await?;
-        Ok(())
+        // Send write command to dedicated thread
+        self.write_tx
+            .send(WriteCommand::Write(data.to_vec()))
+            .map_err(|_| anyhow::anyhow!("Serial writer thread died"))?;
+
+        // Wait for result
+        let rx = unsafe {
+            std::ptr::read(&self.write_result_rx)
+        };
+
+        let (result, rx) = tokio::task::spawn_blocking(move || {
+            let result = rx.recv();
+            (result, rx)
+        })
+        .await?;
+
+        unsafe {
+            std::ptr::write(&mut self.write_result_rx, rx);
+        }
+
+        match result {
+            Ok(WriteResult::Ok) => Ok(()),
+            Ok(WriteResult::Error(e)) => Err(anyhow::anyhow!("Serial write error: {}", e)),
+            Err(_) => Err(anyhow::anyhow!("Serial writer thread died")),
+        }
     }
 
     /// Write a UTF-8 string to the serial port.
     pub async fn write_str(&mut self, data: &str) -> Result<()> {
         self.write_all(data.as_bytes()).await
+    }
+
+    /// Flush is implicit in write_all, but provided for API compatibility.
+    pub async fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for SerialWriter {
+    fn drop(&mut self) {
+        let _ = self.write_tx.send(WriteCommand::Stop);
     }
 }
 
@@ -364,12 +463,12 @@ impl SerialWriter {
 /// # Example
 ///
 /// ```no_run
-/// use wser::serial::list_ports;
+/// use xoq::serial::list_ports;
 ///
 /// for port in list_ports()? {
 ///     println!("Port: {}", port.name);
 ///     match &port.port_type {
-///         wser::serial::PortType::Usb { vid, pid, product, .. } => {
+///         xoq::serial::PortType::Usb { vid, pid, product, .. } => {
 ///             println!("  USB device: VID={:04x} PID={:04x}", vid, pid);
 ///             if let Some(name) = product {
 ///                 println!("  Product: {}", name);
@@ -381,21 +480,21 @@ impl SerialWriter {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub fn list_ports() -> Result<Vec<SerialPortInfo>> {
-    let ports = tokio_serial::available_ports()?;
+    let ports = serialport::available_ports()?;
     Ok(ports
         .into_iter()
         .map(|p| SerialPortInfo {
             name: p.port_name,
             port_type: match p.port_type {
-                tokio_serial::SerialPortType::UsbPort(info) => PortType::Usb {
+                serialport::SerialPortType::UsbPort(info) => PortType::Usb {
                     vid: info.vid,
                     pid: info.pid,
                     manufacturer: info.manufacturer,
                     product: info.product,
                 },
-                tokio_serial::SerialPortType::PciPort => PortType::Pci,
-                tokio_serial::SerialPortType::BluetoothPort => PortType::Bluetooth,
-                tokio_serial::SerialPortType::Unknown => PortType::Unknown,
+                serialport::SerialPortType::PciPort => PortType::Pci,
+                serialport::SerialPortType::BluetoothPort => PortType::Bluetooth,
+                serialport::SerialPortType::Unknown => PortType::Unknown,
             },
         })
         .collect())

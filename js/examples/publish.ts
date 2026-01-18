@@ -7,7 +7,7 @@ async function main() {
 
   const publisher = new Publisher({
     url: "https://localhost:4443",
-    path: "wser",
+    path: "xoq",
     serial: port,
     trackName: "serial",
     groupSize: 1024,

@@ -1,7 +1,7 @@
 export { Publisher } from "./publisher.js";
 export { Subscriber } from "./subscriber.js";
 export type {
-  WserConfig,
+  XoqConfig,
   PublisherConfig,
   SubscriberConfig,
 } from "./types.js";

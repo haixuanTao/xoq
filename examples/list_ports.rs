@@ -1,7 +1,7 @@
 //! List available serial ports
 
 use anyhow::Result;
-use wser::list_ports;
+use xoq::list_ports;
 
 fn main() -> Result<()> {
     println!("Available serial ports:\n");
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     for port in ports {
         println!("  {}", port.name);
         match port.port_type {
-            wser::PortType::Usb {
+            xoq::PortType::Usb {
                 vid,
                 pid,
                 manufacturer,
@@ -31,9 +31,9 @@ fn main() -> Result<()> {
                     println!("    Product: {}", p);
                 }
             }
-            wser::PortType::Pci => println!("    Type: PCI"),
-            wser::PortType::Bluetooth => println!("    Type: Bluetooth"),
-            wser::PortType::Unknown => println!("    Type: Unknown"),
+            xoq::PortType::Pci => println!("    Type: PCI"),
+            xoq::PortType::Bluetooth => println!("    Type: Bluetooth"),
+            xoq::PortType::Unknown => println!("    Type: Unknown"),
         }
         println!();
     }

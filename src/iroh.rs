@@ -8,7 +8,7 @@ use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use std::path::PathBuf;
 use tokio::fs;
 
-const DEFAULT_ALPN: &[u8] = b"wser/p2p/0";
+const DEFAULT_ALPN: &[u8] = b"xoq/p2p/0";
 
 /// Builder for iroh server (accepts connections)
 pub struct IrohServerBuilder {

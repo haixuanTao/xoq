@@ -5,7 +5,7 @@ async function main() {
 
   const subscriber = new Subscriber({
     url: "https://localhost:4443",
-    path: "wser",
+    path: "xoq",
     trackName: "serial",
     onData: (data) => {
       // Log raw bytes or decode as text

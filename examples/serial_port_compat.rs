@@ -1,6 +1,6 @@
 //! Example showing serialport-compatible API for remote serial ports.
 //!
-//! This example demonstrates how wser::serialport can be used as a drop-in
+//! This example demonstrates how xoq::serialport can be used as a drop-in
 //! replacement for the `serialport` crate.
 //!
 //! Usage: serial_port_compat <server-endpoint-id>
@@ -10,8 +10,8 @@ use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
 
-// Drop-in replacement: just change `use serialport` to `use wser::serialport`
-use wser::serialport;
+// Drop-in replacement: just change `use serialport` to `use xoq::serialport`
+use xoq::serialport;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     // ========================================
 
     // Original serialport crate: serialport::new("/dev/ttyUSB0", 115200).open()?
-    // Remote wser version:       serialport::new(server_id).open()?
+    // Remote xoq version:    serialport::new(server_id).open()?
     let mut port = serialport::new(server_id)
         .timeout(Duration::from_secs(1))
         .open()?;

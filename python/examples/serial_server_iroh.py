@@ -6,14 +6,14 @@ Example: serial_server_iroh.py /dev/ttyUSB0 115200
 """
 
 import sys
-import wser
+import xoq
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: serial_server_iroh.py <port> [baud_rate]")
         print("Example: serial_server_iroh.py /dev/ttyUSB0 115200")
         print("\nAvailable ports:")
-        for port in wser.list_ports():
+        for port in xoq.list_ports():
             print(f"  {port.name} - {port.port_type}")
         return
 
@@ -21,10 +21,10 @@ def main():
     baud_rate = int(sys.argv[2]) if len(sys.argv) > 2 else 115200
 
     # Create server - opens serial port and starts iroh
-    server = wser.Server(
+    server = xoq.Server(
         port_name,
         baud_rate,
-        identity_path=".wser_serial_bridge_key"
+        identity_path=".xoq_serial_bridge_key"
     )
 
     print(f"Server started")
