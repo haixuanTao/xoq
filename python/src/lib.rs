@@ -75,31 +75,6 @@ fn xoq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<camera_server::CameraServer>()?;
         m.add_class::<opencv::VideoCapture>()?;
-
-        // OpenCV-compatible property constants at top level
-        m.add("CAP_PROP_POS_MSEC", opencv::CAP_PROP_POS_MSEC)?;
-        m.add("CAP_PROP_POS_FRAMES", opencv::CAP_PROP_POS_FRAMES)?;
-        m.add("CAP_PROP_FRAME_WIDTH", opencv::CAP_PROP_FRAME_WIDTH)?;
-        m.add("CAP_PROP_FRAME_HEIGHT", opencv::CAP_PROP_FRAME_HEIGHT)?;
-        m.add("CAP_PROP_FPS", opencv::CAP_PROP_FPS)?;
-        m.add("CAP_PROP_FRAME_COUNT", opencv::CAP_PROP_FRAME_COUNT)?;
-    }
-
-    // Create xoq.cv2 submodule (OpenCV-compatible interface)
-    #[cfg(all(feature = "camera", feature = "iroh"))]
-    {
-        let cv2 = PyModule::new_bound(py, "cv2")?;
-        cv2.add_class::<opencv::VideoCapture>()?;
-
-        // OpenCV property constants
-        cv2.add("CAP_PROP_POS_MSEC", opencv::CAP_PROP_POS_MSEC)?;
-        cv2.add("CAP_PROP_POS_FRAMES", opencv::CAP_PROP_POS_FRAMES)?;
-        cv2.add("CAP_PROP_FRAME_WIDTH", opencv::CAP_PROP_FRAME_WIDTH)?;
-        cv2.add("CAP_PROP_FRAME_HEIGHT", opencv::CAP_PROP_FRAME_HEIGHT)?;
-        cv2.add("CAP_PROP_FPS", opencv::CAP_PROP_FPS)?;
-        cv2.add("CAP_PROP_FRAME_COUNT", opencv::CAP_PROP_FRAME_COUNT)?;
-
-        m.add_submodule(&cv2)?;
     }
 
     // Create xoq.serial submodule (pyserial-compatible interface)

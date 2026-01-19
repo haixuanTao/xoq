@@ -59,24 +59,23 @@ impl CameraClient {
             send.write_all(b"F").await?;
         }
 
-        // Read frame header
-        let mut header = [0u8; 20];
-        {
+        // Read frame header and data in single lock scope
+        let (width, height, timestamp, jpeg_data) = {
             let mut recv = self.recv.lock().await;
+
+            let mut header = [0u8; 20];
             recv.read_exact(&mut header).await?;
-        }
 
-        let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
-        let timestamp = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
-        let length = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
+            let width = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+            let height = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+            let timestamp = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+            let length = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
 
-        // Read JPEG data
-        let mut jpeg_data = vec![0u8; length as usize];
-        {
-            let mut recv = self.recv.lock().await;
+            let mut jpeg_data = vec![0u8; length as usize];
             recv.read_exact(&mut jpeg_data).await?;
-        }
+
+            (width, height, timestamp, jpeg_data)
+        };
 
         // Decode JPEG to RGB
         let mut frame = Frame::from_jpeg(&jpeg_data)?;
