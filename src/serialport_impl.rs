@@ -19,6 +19,7 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::iroh::{IrohClientBuilder, IrohConnection};
@@ -58,6 +59,7 @@ impl Client {
     pub async fn write(&self, data: &[u8]) -> Result<()> {
         let mut send = self.send.lock().await;
         send.write_all(data).await?;
+        send.flush().await?;
         Ok(())
     }
 
@@ -139,6 +141,10 @@ impl Client {
                     let mut s = send.lock().await;
                     if let Err(e) = s.write_all(&data).await {
                         tracing::debug!("Network write error: {}", e);
+                        break;
+                    }
+                    if let Err(e) = s.flush().await {
+                        tracing::debug!("Network flush error: {}", e);
                         break;
                     }
                     tracing::debug!("Sent successfully");

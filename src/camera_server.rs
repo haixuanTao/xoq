@@ -8,6 +8,7 @@ use crate::iroh::{IrohConnection, IrohServer, IrohServerBuilder};
 use anyhow::Result;
 use iroh::PublicKey;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 const CAMERA_ALPN: &[u8] = b"xoq/camera/0";
@@ -116,6 +117,7 @@ impl CameraServer {
 
                     send.write_all(&header).await?;
                     send.write_all(&jpeg).await?;
+                    send.flush().await?;
                 }
                 Ok(Some(_)) | Ok(None) => {
                     // Client disconnected

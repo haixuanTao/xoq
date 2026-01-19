@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::iroh::{IrohConnection, IrohServerBuilder};
@@ -169,6 +170,10 @@ impl Server {
                 tracing::debug!("Serial -> Network: {} bytes", data.len());
                 if let Err(e) = send.write_all(&data).await {
                     tracing::debug!("Network write error: {}", e);
+                    break;
+                }
+                if let Err(e) = send.flush().await {
+                    tracing::debug!("Network flush error: {}", e);
                     break;
                 }
             }
