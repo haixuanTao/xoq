@@ -58,12 +58,12 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
       - name: Clippy (no features)
         run: cargo clippy -- -D warnings
       - name: Clippy (all features)
-        run: cargo clippy --features "iroh,serial" -- -D warnings
+        run: cargo clippy --features "iroh,serial,camera" -- -D warnings
 
   # Version consistency check across all packages
   version-check:
@@ -104,12 +104,12 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
       - name: Check semver
-        run: cargo semver-checks check-release --features "iroh,serial"
+        run: cargo semver-checks check-release --features "iroh,serial,camera"
         continue-on-error: true  # Advisory for now
 
   # Python API check using griffe
@@ -187,10 +187,10 @@ jobs:
         with:
           key: ${{ matrix.os }}
 
-      # Install libudev on Linux (required for serial port enumeration)
-      - name: Install libudev (Linux)
+      # Install system dependencies on Linux (required for serial and camera)
+      - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
 
       # Build with no features
       - name: Build (no features)
@@ -204,9 +204,13 @@ jobs:
       - name: Build (serial)
         run: cargo build --features serial --verbose
 
+      # Build with camera feature
+      - name: Build (camera)
+        run: cargo build --features camera --verbose
+
       # Build with all features
       - name: Build (all features)
-        run: cargo build --features "iroh,serial" --verbose
+        run: cargo build --features "iroh,serial,camera" --verbose
 
       # Build examples
       - name: Build examples
@@ -214,7 +218,7 @@ jobs:
 
       # Run tests
       - name: Run tests
-        run: cargo test --features "iroh,serial" --verbose
+        run: cargo test --features "iroh,serial,camera" --verbose
 
   # Build Python bindings
   python:
@@ -239,10 +243,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Install libudev on Linux
-      - name: Install libudev (Linux)
+      # Install system dependencies on Linux
+      - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
 
       - name: Install maturin
         run: pip install maturin
@@ -250,12 +254,12 @@ jobs:
       # Build Python package with all features
       - name: Build Python package
         working-directory: python
-        run: maturin build --features "iroh,serial"
+        run: maturin build --features "iroh,serial,camera"
 
       # Build wheel for release
       - name: Build wheel (release)
         working-directory: python
-        run: maturin build --release --features "iroh,serial"
+        run: maturin build --release --features "iroh,serial,camera"
 
       # Upload wheels as artifacts
       - name: Upload wheels
@@ -273,11 +277,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install libudev
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
 
       - name: Build documentation
-        run: cargo doc --features "iroh,serial" --no-deps
+        run: cargo doc --features "iroh,serial,camera" --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -299,12 +303,12 @@ jobs:
         with:
           key: release-${{ matrix.os }}
 
-      - name: Install libudev (Linux)
+      - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
 
       - name: Build release
-        run: cargo build --release --features "iroh,serial"
+        run: cargo build --release --features "iroh,serial,camera"
 
       - name: Build release examples
         run: cargo build --release --examples --features "iroh,serial"

@@ -11,8 +11,10 @@ crate-type = ["cdylib"]
 default = []
 iroh = ["xoq/iroh"]
 serial = ["xoq/serial"]
+camera = ["xoq/camera", "numpy"]
 
 [dependencies]
 xoq = { path = ".." }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+numpy = { version = "0.22", optional = true }

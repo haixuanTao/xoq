@@ -57,24 +57,10 @@ pub mod iroh;
 pub mod serial;
 
 #[cfg(all(feature = "serial", feature = "iroh"))]
-pub mod serial_bridge;
-
-// Re-export commonly used types
-pub use moq::{
-    MoqBuilder, MoqConnection, MoqPublisher, MoqSubscriber, MoqTrackReader, MoqTrackWriter,
-};
-
-#[cfg(feature = "iroh")]
-pub use iroh::{IrohClientBuilder, IrohConnection, IrohServer, IrohServerBuilder, IrohStream};
-
-#[cfg(feature = "serial")]
-pub use serial::{
-    baud, list_ports, DataBits, Parity, PortType, SerialConfig, SerialPort, SerialPortInfo,
-    SerialReader, SerialWriter, StopBits,
-};
+pub mod serial_server;
 
 #[cfg(all(feature = "serial", feature = "iroh"))]
-pub use serial_bridge::{Client, RemoteSerialPort, Server};
+pub mod serialport_impl;
 
 /// `serialport`-compatible module for remote serial ports.
 ///
@@ -92,8 +78,46 @@ pub use serial_bridge::{Client, RemoteSerialPort, Server};
 /// ```
 #[cfg(all(feature = "serial", feature = "iroh"))]
 pub mod serialport {
-    pub use crate::serial_bridge::{new, RemoteSerialPort, SerialPortBuilder, Transport};
+    pub use crate::serialport_impl::{new, Client, RemoteSerialPort, SerialPortBuilder, Transport};
 }
+
+#[cfg(feature = "camera")]
+pub mod camera;
+
+#[cfg(all(feature = "camera", feature = "iroh"))]
+pub mod camera_server;
+
+#[cfg(all(feature = "camera", feature = "iroh"))]
+pub mod opencv;
+
+// Re-export commonly used types
+pub use moq::{
+    MoqBuilder, MoqConnection, MoqPublisher, MoqSubscriber, MoqTrackReader, MoqTrackWriter,
+};
+
+#[cfg(feature = "iroh")]
+pub use iroh::{IrohClientBuilder, IrohConnection, IrohServer, IrohServerBuilder, IrohStream};
+
+#[cfg(feature = "serial")]
+pub use serial::{
+    baud, list_ports, DataBits, Parity, PortType, SerialConfig, SerialPort, SerialPortInfo,
+    SerialReader, SerialWriter, StopBits,
+};
+
+#[cfg(all(feature = "serial", feature = "iroh"))]
+pub use serial_server::Server;
+
+#[cfg(all(feature = "serial", feature = "iroh"))]
+pub use serialport::{Client, RemoteSerialPort};
+
+#[cfg(feature = "camera")]
+pub use camera::{list_cameras, Camera, CameraInfo, Frame};
+
+#[cfg(all(feature = "camera", feature = "iroh"))]
+pub use camera_server::CameraServer;
+
+#[cfg(all(feature = "camera", feature = "iroh"))]
+pub use opencv::{remote_camera, CameraClient};
 
 // Re-export token generation
 pub use moq_token;

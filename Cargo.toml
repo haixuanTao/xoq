@@ -10,12 +10,15 @@ edition = "2021"
 default = []
 iroh = ["dep:iroh"]
 serial = ["dep:serialport"]
+camera = ["dep:nokhwa", "dep:image"]
 
 [dependencies]
 moq-transport = "0.12"
 moq-token = "0.5"
 iroh = { version = "0.95", optional = true }
 serialport = { version = "4", optional = true }
+nokhwa = { version = "0.10", features = ["input-native"], optional = true }
+image = { version = "0.25", optional = true }
 moq-native = "0.11"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

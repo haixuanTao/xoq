@@ -23,7 +23,7 @@ classifiers = [
 dev = ["ruff", "mypy"]
 
 [tool.maturin]
-features = ["pyo3/extension-module", "pyo3/abi3-py38", "iroh", "serial"]
+features = ["pyo3/extension-module", "pyo3/abi3-py38", "iroh", "serial", "camera"]
 strip = true
 
 [tool.ruff]
