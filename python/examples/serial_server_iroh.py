@@ -6,7 +6,9 @@ Example: serial_server_iroh.py /dev/ttyUSB0 115200
 """
 
 import sys
+
 import xoq
+
 
 def main():
     if len(sys.argv) < 2:
@@ -21,19 +23,16 @@ def main():
     baud_rate = int(sys.argv[2]) if len(sys.argv) > 2 else 115200
 
     # Create server - opens serial port and starts iroh
-    server = xoq.Server(
-        port_name,
-        baud_rate,
-        identity_path=".xoq_serial_bridge_key"
-    )
+    server = xoq.Server(port_name, baud_rate, identity_path=".xoq_serial_bridge_key")
 
-    print(f"Server started")
+    print("Server started")
     print(f"Port: {port_name} @ {baud_rate} baud")
     print(f"Server ID: {server.id()}")
     print("Waiting for connections...")
 
     # Run forever - all forwarding handled in Rust
     server.run()
+
 
 if __name__ == "__main__":
     main()

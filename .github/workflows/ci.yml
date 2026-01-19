@@ -11,7 +11,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Check formatting
+  # Check Rust formatting
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -21,6 +21,32 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  # Python linting
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: pip install ruff mypy
+
+      - name: Ruff check
+        working-directory: python
+        run: ruff check .
+
+      - name: Ruff format check
+        working-directory: python
+        run: ruff format --check .
+
+      - name: Mypy
+        working-directory: python
+        run: mypy . --ignore-missing-imports
 
   # Clippy linting
   clippy:

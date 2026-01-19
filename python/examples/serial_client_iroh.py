@@ -6,7 +6,9 @@ Usage: serial_client_iroh.py <server-endpoint-id>
 
 import sys
 import threading
+
 import xoq
+
 
 def main():
     if len(sys.argv) < 2:
@@ -32,7 +34,7 @@ def main():
                 if data:
                     # Print received data (decode if text, or show hex)
                     try:
-                        print(data.decode('utf-8'), end='', flush=True)
+                        print(data.decode("utf-8"), end="", flush=True)
                     except UnicodeDecodeError:
                         print(f"[hex: {data.hex()}]", flush=True)
             except Exception as e:
@@ -55,6 +57,7 @@ def main():
         pass
     finally:
         running = False
+
 
 if __name__ == "__main__":
     main()

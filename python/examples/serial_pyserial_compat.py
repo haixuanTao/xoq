@@ -9,7 +9,9 @@ Usage: serial_pyserial_compat.py <server-endpoint-id>
 """
 
 import sys
+
 import xoq
+
 
 def main():
     if len(sys.argv) < 2:
@@ -34,7 +36,7 @@ def main():
         print(f"is_open={ser.is_open}")
 
         # Write bytes (returns number of bytes written)
-        n = ser.write(b'AT\r\n')
+        n = ser.write(b"AT\r\n")
         print(f"Wrote {n} bytes")
 
         # Read a line (blocks until newline received)
@@ -42,8 +44,8 @@ def main():
         print(f"Response: {response}")
 
         # Read until custom terminator (e.g., "OK\r\n")
-        ser.write(b'ATI\r\n')
-        response = ser.read_until(b'\r\n')
+        ser.write(b"ATI\r\n")
+        response = ser.read_until(b"\r\n")
         print(f"Read until CRLF: {response}")
 
         # Read specific number of bytes
@@ -82,8 +84,8 @@ def interactive_example():
                 try:
                     line = ser.readline()
                     if line:
-                        print(f"< {line.decode('utf-8', errors='replace')}", end='')
-                except:
+                        print(f"< {line.decode('utf-8', errors='replace')}", end="")
+                except Exception:
                     break
 
         t = threading.Thread(target=reader, daemon=True)
