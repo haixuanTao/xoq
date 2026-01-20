@@ -6587,7 +6587,7 @@ dependencies = [
 
 [[package]]
 name = "xoq"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6609,7 +6609,7 @@ dependencies = [
 
 [[package]]
 name = "xoq-python"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "numpy",
  "pyo3",

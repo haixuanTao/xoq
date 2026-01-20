@@ -1,7 +1,10 @@
 [package]
 name = "xoq-python"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
+description = "X-Embodiment over QUIC - Python bindings for P2P and relay communication"
+license = "Apache-2.0"
+repository = "https://github.com/xaviertao/xoq"
 
 [lib]
 name = "xoq"
