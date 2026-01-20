@@ -7,7 +7,7 @@ version = "0.2.1"
 edition = "2021"
 description = "X-Embodiment over QUIC - P2P and relay communication for robotics"
 license = "Apache-2.0"
-repository = "https://github.com/xaviertao/xoq"
+repository = "https://github.com/haixuantao/xoq"
 
 [features]
 default = []
