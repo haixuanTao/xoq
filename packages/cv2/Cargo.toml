@@ -1,6 +1,6 @@
 [package]
 name = "xoq-opencv"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "Drop-in replacement for opencv-python - remote cameras over P2P"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ name = "cv2"
 crate-type = ["cdylib"]
 
 [dependencies]
-xoq = { path = "../..", features = ["iroh", "camera"] }
+xoq = { path = "../..", features = ["camera-remote"] }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 numpy = "0.22"

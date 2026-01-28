@@ -533,6 +533,8 @@ impl std::io::Write for RemoteSerialPort {
     }
 }
 
+// Only implement serialport::SerialPort trait when the serialport crate is available
+#[cfg(feature = "serial")]
 impl serialport::SerialPort for RemoteSerialPort {
     fn name(&self) -> Option<String> {
         Some(self.port_name.clone())

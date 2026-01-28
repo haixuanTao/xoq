@@ -1,6 +1,6 @@
 [package]
 name = "xoq-serial"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 description = "Drop-in replacement for pyserial - remote serial ports over P2P"
 license = "Apache-2.0"
@@ -11,6 +11,6 @@ name = "serial"
 crate-type = ["cdylib"]
 
 [dependencies]
-xoq = { path = "../..", features = ["iroh", "serial"] }
+xoq = { path = "../..", features = ["serial-remote"] }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }

@@ -26,7 +26,7 @@
 //! }
 //! ```
 
-use crate::camera::Frame;
+use crate::frame::Frame;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;

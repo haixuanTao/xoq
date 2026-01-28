@@ -53,13 +53,18 @@ pub mod moq;
 #[cfg(feature = "iroh")]
 pub mod iroh;
 
+// Frame type (available when image feature is enabled)
+#[cfg(feature = "image")]
+pub mod frame;
+
 #[cfg(feature = "serial")]
 pub mod serial;
 
 #[cfg(all(feature = "serial", feature = "iroh"))]
 pub mod serial_server;
 
-#[cfg(all(feature = "serial", feature = "iroh"))]
+// Serial client - available with serial-remote OR (serial + iroh)
+#[cfg(any(feature = "serial-remote", all(feature = "serial", feature = "iroh")))]
 pub mod serialport_impl;
 
 /// `serialport`-compatible module for remote serial ports.
@@ -76,7 +81,7 @@ pub mod serialport_impl;
 /// let mut port = serialport::new("server-endpoint-id").open()?;
 /// # Ok::<(), anyhow::Error>(())
 /// ```
-#[cfg(all(feature = "serial", feature = "iroh"))]
+#[cfg(any(feature = "serial-remote", all(feature = "serial", feature = "iroh")))]
 pub mod serialport {
     pub use crate::serialport_impl::{new, Client, RemoteSerialPort, SerialPortBuilder, Transport};
 }
@@ -87,7 +92,8 @@ pub mod camera;
 #[cfg(all(feature = "camera", feature = "iroh"))]
 pub mod camera_server;
 
-#[cfg(all(feature = "camera", feature = "iroh"))]
+// Camera client - available with camera-remote OR (camera + iroh)
+#[cfg(any(feature = "camera-remote", all(feature = "camera", feature = "iroh")))]
 pub mod opencv;
 
 // Platform-independent CAN types (always available)
@@ -153,16 +159,24 @@ pub use serial::{
 #[cfg(all(feature = "serial", feature = "iroh"))]
 pub use serial_server::Server;
 
-#[cfg(all(feature = "serial", feature = "iroh"))]
+#[cfg(any(feature = "serial-remote", all(feature = "serial", feature = "iroh")))]
 pub use serialport::{Client, RemoteSerialPort};
 
+// Frame type (available with image feature or camera feature)
+#[cfg(feature = "image")]
+pub use frame::Frame;
+
 #[cfg(feature = "camera")]
-pub use camera::{list_cameras, Camera, CameraInfo, Frame};
+pub use camera::{list_cameras, Camera, CameraInfo};
+
+// Re-export Frame from camera module when camera is enabled (for backwards compat)
+#[cfg(all(feature = "camera", not(feature = "image")))]
+pub use camera::Frame;
 
 #[cfg(all(feature = "camera", feature = "iroh"))]
 pub use camera_server::{CameraServer, CameraServerBuilder};
 
-#[cfg(all(feature = "camera", feature = "iroh"))]
+#[cfg(any(feature = "camera-remote", all(feature = "camera", feature = "iroh")))]
 pub use opencv::{remote_camera, CameraClient, CameraClientBuilder};
 
 // Platform-independent CAN types (always available)
