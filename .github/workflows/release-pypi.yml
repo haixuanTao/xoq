@@ -42,9 +42,9 @@ jobs:
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
+          # manylinux images are CentOS-based, use yum
           before-script-linux: |
-            apt-get update
-            apt-get install -y libudev-dev pkg-config
+            yum install -y libudev-devel pkgconfig || true
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -80,8 +80,9 @@ jobs:
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
+          # musllinux images are Alpine-based, use apk
           before-script-linux: |
-            apk add --no-cache eudev-dev pkgconfig
+            apk add --no-cache eudev-dev pkgconfig || true
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -123,7 +124,8 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-13
+          # macos-14 supports both x86_64 (cross-compile) and aarch64 (native)
+          - runner: macos-14
             target: x86_64
           - runner: macos-14
             target: aarch64
