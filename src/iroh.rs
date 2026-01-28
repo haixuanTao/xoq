@@ -210,6 +210,13 @@ impl IrohStream {
         Ok(())
     }
 
+    /// Flush the write buffer
+    pub async fn flush(&mut self) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.send.flush().await?;
+        Ok(())
+    }
+
     /// Write a string to the stream
     pub async fn write_str(&mut self, data: &str) -> Result<()> {
         self.write(data.as_bytes()).await

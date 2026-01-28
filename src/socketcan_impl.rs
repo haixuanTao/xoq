@@ -377,6 +377,7 @@ impl RemoteCanSocket {
                 ClientInner::Iroh { stream, .. } => {
                     let mut s = stream.lock().await;
                     s.write(data).await?;
+                    s.flush().await?; // Flush immediately to avoid buffering delays
                 }
                 ClientInner::Moq { conn } => {
                     let mut c = conn.lock().await;
