@@ -1,6 +1,6 @@
 [package]
 name = "xoq-can"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Drop-in replacement for python-can - remote CAN bus over P2P"
 license = "Apache-2.0"

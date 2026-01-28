@@ -1,6 +1,6 @@
 {
   "name": "xoq",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MoQ-based serial port streaming for the web",
   "type": "module",
   "main": "./dist/index.js",
