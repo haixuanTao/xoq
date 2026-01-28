@@ -174,6 +174,19 @@ impl CanServer {
         let can_read_rx = self.can_read_rx.clone();
         let can_write_tx = self.can_write_tx.clone();
 
+        // Drain any stale frames from the channel before starting
+        // This prevents old data from confusing a reconnecting client
+        {
+            let mut rx = can_read_rx.lock().await;
+            let mut drained = 0;
+            while rx.try_recv().is_ok() {
+                drained += 1;
+            }
+            if drained > 0 {
+                tracing::info!("Drained {} stale CAN frames from buffer", drained);
+            }
+        }
+
         // Use connection's cancellation token for graceful shutdown
         let cancel_token = conn.cancellation_token();
 

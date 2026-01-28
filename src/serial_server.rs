@@ -163,6 +163,19 @@ impl Server {
         let serial_read_rx = self.serial_read_rx.clone();
         let serial_write_tx = self.serial_write_tx.clone();
 
+        // Drain any stale data from the channel before starting
+        // This prevents old data from confusing a reconnecting client
+        {
+            let mut rx = serial_read_rx.lock().await;
+            let mut drained = 0;
+            while rx.try_recv().is_ok() {
+                drained += 1;
+            }
+            if drained > 0 {
+                tracing::info!("Drained {} stale serial messages from buffer", drained);
+            }
+        }
+
         // Use connection's cancellation token for graceful shutdown (ensures lock is released)
         let cancel_token = conn.cancellation_token();
 
