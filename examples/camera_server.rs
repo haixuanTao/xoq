@@ -18,11 +18,15 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use xoq::camera::{list_cameras, Camera, CameraOptions};
+use xoq::camera::{list_cameras, Camera};
+#[cfg(feature = "nvenc")]
+use xoq::camera::CameraOptions;
 use xoq::iroh::IrohServerBuilder;
 
 // NVENC imports
+#[cfg(feature = "nvenc")]
 use cudarc::driver::CudaContext;
+#[cfg(feature = "nvenc")]
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P4_GUID,
@@ -32,6 +36,7 @@ use nvidia_video_codec_sdk::{
 };
 
 const CAMERA_JPEG_ALPN: &[u8] = b"xoq/camera-jpeg/0";
+#[cfg(feature = "nvenc")]
 const CAMERA_H264_ALPN: &[u8] = b"xoq/camera-h264/0";
 
 /// Get unique USB path for a video device
@@ -69,6 +74,7 @@ struct CameraConfig {
     height: u32,
     fps: u32,
     quality: u8,
+    #[cfg_attr(not(feature = "nvenc"), allow(dead_code))]
     bitrate: u32,
     use_h264: bool,
     identity_path: PathBuf,
@@ -205,6 +211,7 @@ fn print_usage() {
     print_cameras();
 }
 
+#[cfg(feature = "nvenc")]
 /// NVENC encoder wrapper.
 /// Uses ManuallyDrop to control drop order: buffers must drop before session.
 struct NvencEncoder {
@@ -220,8 +227,10 @@ struct NvencEncoder {
     nv12_buffer: Vec<u8>,
 }
 
+#[cfg(feature = "nvenc")]
 unsafe impl Send for NvencEncoder {}
 
+#[cfg(feature = "nvenc")]
 impl Drop for NvencEncoder {
     fn drop(&mut self) {
         // Drop buffers first while the session/encoder is still valid
@@ -239,6 +248,7 @@ impl Drop for NvencEncoder {
     }
 }
 
+#[cfg(feature = "nvenc")]
 impl NvencEncoder {
     fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
         // Initialize CUDA
@@ -402,7 +412,10 @@ async fn run_camera_server(config: CameraConfig) -> Result<()> {
         tracing::info!("[cam{}] Starting {}...", config.index, config.name);
 
         let result = if config.use_h264 {
-            run_camera_server_h264(&config).await
+            #[cfg(feature = "nvenc")]
+            { run_camera_server_h264(&config).await }
+            #[cfg(not(feature = "nvenc"))]
+            { anyhow::bail!("H.264 requires the 'nvenc' feature") }
         } else {
             run_camera_server_jpeg(&config).await
         };
@@ -495,6 +508,7 @@ async fn run_camera_server_jpeg(config: &CameraConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "nvenc")]
 async fn run_camera_server_h264(config: &CameraConfig) -> Result<()> {
     // Open camera with YUYV preferred for hardware encoding
     let camera = Camera::open_with_options(
@@ -612,6 +626,13 @@ async fn main() -> Result<()> {
     };
 
     let use_h264 = configs.first().map(|c| c.use_h264).unwrap_or(false);
+
+    #[cfg(not(feature = "nvenc"))]
+    if use_h264 {
+        eprintln!("Error: H.264 encoding requires the 'nvenc' feature.");
+        eprintln!("Rebuild with: cargo run --example camera_server --features iroh,nvenc");
+        return Ok(());
+    }
 
     tracing::info!("Camera server starting");
     tracing::info!("Key dir: {}", key_dir.display());

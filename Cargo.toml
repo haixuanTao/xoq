@@ -83,4 +83,4 @@ required-features = ["iroh", "can"]
 [[example]]
 name = "camera_server"
 path = "examples/camera_server.rs"
-required-features = ["iroh", "nvenc"]
+required-features = ["iroh", "camera"]
