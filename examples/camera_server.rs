@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use xoq::camera::{list_cameras, Camera, CameraOptions};
 use xoq::iroh::IrohServerBuilder;
 
@@ -204,17 +205,39 @@ fn print_usage() {
     print_cameras();
 }
 
-/// NVENC encoder wrapper
+/// NVENC encoder wrapper.
+/// Uses ManuallyDrop to control drop order: buffers must drop before session.
 struct NvencEncoder {
-    session: Session,
-    input_buffer: Buffer<'static>,
-    output_bitstream: Bitstream<'static>,
+    // Drop order matters: buffers reference the session's encoder pointer,
+    // so they must be dropped BEFORE the session.
+    input_buffer: std::mem::ManuallyDrop<Buffer<'static>>,
+    output_bitstream: std::mem::ManuallyDrop<Bitstream<'static>>,
+    // Owned via raw pointer for stable 'static address.
+    // Reclaimed and dropped properly in Drop impl.
+    session: *mut Session,
     width: u32,
     height: u32,
     nv12_buffer: Vec<u8>,
 }
 
 unsafe impl Send for NvencEncoder {}
+
+impl Drop for NvencEncoder {
+    fn drop(&mut self) {
+        // Drop buffers first while the session/encoder is still valid
+        unsafe {
+            std::mem::ManuallyDrop::drop(&mut self.input_buffer);
+            std::mem::ManuallyDrop::drop(&mut self.output_bitstream);
+        }
+        // Reclaim the session and drop it properly.
+        // Session::drop() sends EOS - catch_unwind handles the case where
+        // the encoder is busy (e.g. task was aborted mid-encode).
+        if !self.session.is_null() {
+            let session = unsafe { Box::from_raw(self.session) };
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(session)));
+        }
+    }
+}
 
 impl NvencEncoder {
     fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
@@ -254,28 +277,28 @@ impl NvencEncoder {
 
         let buffer_format = NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12;
 
-        // Start session
+        // Start session - own via raw pointer for stable 'static address
         let session = encoder
             .start_session(buffer_format, init_params)
             .map_err(|e| anyhow::anyhow!("Failed to start session: {:?}", e))?;
 
-        // Leak for 'static lifetime
-        let session: &'static mut Session = Box::leak(Box::new(session));
+        let session_ptr = Box::into_raw(Box::new(session));
+        let session_ref: &'static Session = unsafe { &*session_ptr };
 
-        let input_buffer = session
+        let input_buffer = session_ref
             .create_input_buffer()
             .map_err(|e| anyhow::anyhow!("Failed to create input buffer: {:?}", e))?;
 
-        let output_bitstream = session
+        let output_bitstream = session_ref
             .create_output_bitstream()
             .map_err(|e| anyhow::anyhow!("Failed to create output bitstream: {:?}", e))?;
 
         let nv12_size = (width * height * 3 / 2) as usize;
 
         Ok(NvencEncoder {
-            session: unsafe { std::ptr::read(session) },
-            input_buffer,
-            output_bitstream,
+            session: session_ptr,
+            input_buffer: std::mem::ManuallyDrop::new(input_buffer),
+            output_bitstream: std::mem::ManuallyDrop::new(output_bitstream),
             width,
             height,
             nv12_buffer: vec![0u8; nv12_size],
@@ -301,10 +324,11 @@ impl NvencEncoder {
             unsafe { lock.write(&self.nv12_buffer) };
         }
 
-        self.session
+        let session: &Session = unsafe { &*self.session };
+        session
             .encode_picture(
-                &mut self.input_buffer,
-                &mut self.output_bitstream,
+                &mut *self.input_buffer,
+                &mut *self.output_bitstream,
                 EncodePictureParams {
                     input_timestamp: timestamp_us,
                     ..Default::default()
@@ -600,18 +624,26 @@ async fn main() -> Result<()> {
     println!("========================================\n");
 
     // Spawn all camera servers as async tasks
-    let mut tasks = Vec::new();
+    let mut tasks: JoinSet<Result<()>> = JoinSet::new();
     for config in configs {
-        tasks.push(tokio::spawn(run_camera_server(config)));
+        tasks.spawn(run_camera_server(config));
     }
 
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("Shutting down...");
-
-    for task in tasks {
-        task.abort();
+    // Wait for Ctrl+C or all servers to exit
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Shutting down...");
+            tasks.abort_all();
+        }
+        _ = async {
+            while tasks.join_next().await.is_some() {}
+        } => {
+            tracing::info!("All camera servers stopped");
+        }
     }
+
+    // Drain remaining tasks so NvencEncoder destructors run before process exit
+    while tasks.join_next().await.is_some() {}
 
     Ok(())
 }
