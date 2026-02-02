@@ -868,16 +868,12 @@ mod nvdec {
             })
         }
 
-        fn ensure_decoder(&mut self, width: u32, height: u32) -> Result<()> {
-            if self.width == width && self.height == height && !self.parser.is_null() {
+        fn ensure_decoder(&mut self) -> Result<()> {
+            // Parser already exists — sequence_callback handles decoder
+            // recreation when SPS changes, so we never need to tear down here.
+            if !self.parser.is_null() {
                 return Ok(());
             }
-
-            // Destroy old decoder/parser if exists
-            self.destroy_decoder();
-
-            self.width = width;
-            self.height = height;
 
             // Create video parser
             let mut parser_params: CUVIDPARSERPARAMS = unsafe { std::mem::zeroed() };
@@ -911,7 +907,7 @@ mod nvdec {
         pub fn decode(&mut self, h264_data: &[u8], width: u32, height: u32, timestamp: u64) -> Result<Frame> {
             self.display_width = width;
             self.display_height = height;
-            self.ensure_decoder(width, height)?;
+            self.ensure_decoder()?;
 
             // Create packet
             let mut packet: CUVIDSOURCEDATAPACKET = unsafe { std::mem::zeroed() };
