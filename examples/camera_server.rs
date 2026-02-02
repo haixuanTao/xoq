@@ -618,9 +618,6 @@ async fn run_camera_server_moq(config: &CameraConfig, moq_path: &str) -> Result<
         track.write(buf);
 
         frame_count += 1;
-        if frame_count % 300 == 0 {
-            tracing::info!("[cam{}] {} MoQ frames sent", cam_idx, frame_count);
-        }
     }
 }
 
@@ -715,9 +712,6 @@ async fn run_camera_server_moq_h264_vtenc(config: &CameraConfig, moq_path: &str)
         }
 
         frame_count += 1;
-        if frame_count % 300 == 0 {
-            tracing::info!("[cam{}] {} H.264 CMAF frames sent", cam_idx, frame_count);
-        }
     }
 }
 
@@ -819,9 +813,6 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
         }
 
         frame_count += 1;
-        if frame_count % 300 == 0 {
-            tracing::info!("[cam{}] {} H.264 CMAF frames sent (NVENC)", cam_idx, frame_count);
-        }
     }
 }
 
@@ -905,9 +896,6 @@ async fn run_camera_server_jpeg(config: &CameraConfig) -> Result<()> {
             }
 
             frame_count += 1;
-            if frame_count % 300 == 0 {
-                tracing::info!("[cam{}] {} frames sent", cam_idx, frame_count);
-            }
         }
 
         tracing::info!("[cam{}] Client disconnected", cam_idx);
@@ -1037,10 +1025,6 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
 
             // Yield so iroh/QUIC can flush the send buffer.
             tokio::task::yield_now().await;
-
-            if frame_count % 300 == 0 {
-                tracing::info!("[cam{}] {} H.264 frames sent", cam_idx, frame_count);
-            }
         }
 
         tracing::info!("[cam{}] Client disconnected", cam_idx);
@@ -1131,9 +1115,6 @@ async fn run_camera_server_h264_vtenc(config: &CameraConfig) -> Result<()> {
             use tokio::time::sleep;
             sleep(Duration::from_millis(30)).await; // Yield to allow other tasks to run
             frame_count += 1;
-            if frame_count % 300 == 0 {
-                tracing::info!("[cam{}] {} H.264 frames sent", cam_idx, frame_count);
-            }
         }
 
         tracing::info!("[cam{}] Client disconnected", cam_idx);
