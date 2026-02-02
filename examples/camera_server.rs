@@ -994,6 +994,14 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
                 }
             };
 
+            if frame_count < 3 {
+                let nal_type = h264_data.get(4).map(|b| b & 0x1F).unwrap_or(0);
+                tracing::info!(
+                    "[cam{}] Frame {}: {} bytes, NAL type {}",
+                    cam_idx, frame_count, h264_data.len(), nal_type
+                );
+            }
+
             let timestamp_us = frame_count * 1_000_000 / config.fps as u64;
             let mut header = Vec::with_capacity(20);
             header.extend_from_slice(&actual_width.to_le_bytes());
@@ -1001,8 +1009,25 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
             header.extend_from_slice(&timestamp_us.to_le_bytes());
             header.extend_from_slice(&(h264_data.len() as u32).to_le_bytes());
 
-            if send.write_all(&header).await.is_err() || send.write_all(&h264_data).await.is_err() {
-                break;
+            let write_result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                async {
+                    send.write_all(&header).await?;
+                    send.write_all(&h264_data).await?;
+                    Ok::<(), std::io::Error>(())
+                },
+            ).await;
+
+            match write_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("[cam{}] Write error: {}", cam_idx, e);
+                    break;
+                }
+                Err(_) => {
+                    tracing::warn!("[cam{}] Write timeout (5s), dropping connection", cam_idx);
+                    break;
+                }
             }
 
             frame_count += 1;
