@@ -167,64 +167,6 @@ impl IrohServer {
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
-
-    /// Warm up the UDP socket to trigger (and survive) a GSO probe failure.
-    ///
-    /// On Linux, the first large QUIC send may fail with EIO if the NIC doesn't
-    /// support UDP GSO. Quinn/iroh then disables GSO on the socket, but the
-    /// connection that triggered the failure is lost. This method connects to
-    /// itself and sends enough data to trigger the probe, so real client
-    /// connections don't hit the issue.
-    pub async fn warmup_gso(&self) {
-        const WARMUP_ALPN: &[u8] = b"xoq/gso-warmup";
-
-        // Build a temporary client endpoint that can connect to our server
-        let client_ep = match Endpoint::builder()
-            .alpns(vec![WARMUP_ALPN.to_vec()])
-            .bind()
-            .await
-        {
-            Ok(ep) => ep,
-            Err(_) => return,
-        };
-
-        let addr = EndpointAddr::from(self.endpoint.id());
-
-        // Accept side: drain the warmup connection in the background
-        let server_ep = self.endpoint.clone();
-        let accept_task = tokio::spawn(async move {
-            if let Some(incoming) = server_ep.accept().await {
-                if let Ok(conn) = incoming.await {
-                    // Accept a stream and read until closed
-                    if let Ok((_, mut recv)) = conn.accept_bi().await {
-                        let mut buf = [0u8; 1];
-                        let _ = recv.read(&mut buf).await;
-                    }
-                }
-            }
-        });
-
-        // Connect and send a payload large enough to trigger GSO segmentation.
-        // QUIC MTU is ~1200 bytes; we need multiple segments, so send ~16KB.
-        let result: Result<(), anyhow::Error> = async {
-            let conn = client_ep.connect(addr, WARMUP_ALPN).await?;
-            let (mut send, _recv) = conn.open_bi().await?;
-            let payload = vec![0u8; 16384];
-            send.write_all(&payload).await?;
-            send.finish()?;
-            Ok(())
-        }
-        .await;
-
-        // Whether it succeeded or failed (GSO EIO), the probe is done.
-        if let Err(e) = &result {
-            tracing::debug!("GSO warmup send failed (expected on first run): {}", e);
-        }
-
-        // Give the accept side a moment to finish, then clean up
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), accept_task).await;
-        let _ = client_ep.close().await;
-    }
 }
 
 /// An iroh connection (either server or client side)

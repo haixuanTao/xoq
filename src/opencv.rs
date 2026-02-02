@@ -401,47 +401,54 @@ impl CameraClientBuilder {
         };
 
         let mut last_error = None;
-        for alpn in &alpns {
-            match IrohClientBuilder::new()
-                .alpn(alpn)
-                .connect_str(server_id)
-                .await
-            {
-                Ok(conn) => {
-                    let encoding = if *alpn == CAMERA_ALPN_H264 {
-                        StreamEncoding::H264
-                    } else {
-                        StreamEncoding::Jpeg
-                    };
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                tracing::info!("Retrying iroh connection (attempt {}/3)...", attempt + 1);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
 
-                    tracing::info!(
-                        "Connected with {} encoding",
-                        if encoding == StreamEncoding::H264 { "H.264" } else { "JPEG" }
-                    );
+            for alpn in &alpns {
+                match IrohClientBuilder::new()
+                    .alpn(alpn)
+                    .connect_str(server_id)
+                    .await
+                {
+                    Ok(conn) => {
+                        let encoding = if *alpn == CAMERA_ALPN_H264 {
+                            StreamEncoding::H264
+                        } else {
+                            StreamEncoding::Jpeg
+                        };
 
-                    let stream = conn.open_stream().await?;
-                    let (_send, recv) = stream.split();
+                        tracing::info!(
+                            "Connected with {} encoding",
+                            if encoding == StreamEncoding::H264 { "H.264" } else { "JPEG" }
+                        );
 
-                    // Create decoder if H.264
-                    #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
-                    let decoder = if encoding == StreamEncoding::H264 {
-                        Some(Arc::new(Mutex::new(H264Decoder::new()?)))
-                    } else {
-                        None
-                    };
+                        let stream = conn.open_stream().await?;
+                        let (_send, recv) = stream.split();
 
-                    return Ok(CameraClientInner::Iroh {
-                        recv: Arc::new(Mutex::new(recv)),
-                        _conn: conn,
-                        encoding,
+                        // Create decoder if H.264
                         #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
-                        decoder,
-                    });
-                }
-                Err(e) => {
-                    tracing::debug!("Failed to connect with ALPN {:?}: {}",
-                        String::from_utf8_lossy(alpn), e);
-                    last_error = Some(e);
+                        let decoder = if encoding == StreamEncoding::H264 {
+                            Some(Arc::new(Mutex::new(H264Decoder::new()?)))
+                        } else {
+                            None
+                        };
+
+                        return Ok(CameraClientInner::Iroh {
+                            recv: Arc::new(Mutex::new(recv)),
+                            _conn: conn,
+                            encoding,
+                            #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                            decoder,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to connect with ALPN {:?}: {}",
+                            String::from_utf8_lossy(alpn), e);
+                        last_error = Some(e);
+                    }
                 }
             }
         }

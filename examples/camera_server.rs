@@ -858,9 +858,6 @@ async fn run_camera_server_jpeg(config: &CameraConfig) -> Result<()> {
         .bind()
         .await?;
 
-    // Probe UDP GSO so the first real client doesn't hit EIO
-    server.warmup_gso().await;
-
     tracing::info!("[cam{}] Server ID: {}", config.index, server.id());
 
     loop {
@@ -956,9 +953,6 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
         .identity_path(&config.identity_path)
         .bind()
         .await?;
-
-    // Probe UDP GSO so the first real client doesn't hit EIO
-    server.warmup_gso().await;
 
     tracing::info!("[cam{}] Server ID: {}", config.index, server.id());
 
@@ -1081,9 +1075,6 @@ async fn run_camera_server_h264_vtenc(config: &CameraConfig) -> Result<()> {
         .identity_path(&config.identity_path)
         .bind()
         .await?;
-
-    // Probe UDP GSO so the first real client doesn't hit EIO
-    server.warmup_gso().await;
 
     tracing::info!("[cam{}] Server ID: {}", config.index, server.id());
 
