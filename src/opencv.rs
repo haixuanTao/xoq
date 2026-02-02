@@ -827,8 +827,12 @@ mod nvdec {
         parser: CUvideoparser,
         decoder: CUvideodecoder,
         _ctx: std::sync::Arc<CudaContext>,
+        // Coded dimensions (from SPS, may be rounded up to macroblock boundary)
         width: u32,
         height: u32,
+        // Display dimensions (actual video content, from caller)
+        display_width: u32,
+        display_height: u32,
         // Decoded frame storage
         decoded_frames: Vec<DecodedFrame>,
         // NV12 to RGB conversion buffer
@@ -837,8 +841,12 @@ mod nvdec {
 
     struct DecodedFrame {
         data: Vec<u8>,
-        width: u32,
-        height: u32,
+        // Coded dimensions (for NV12 buffer layout)
+        coded_width: u32,
+        coded_height: u32,
+        // Display dimensions (for RGB output)
+        display_width: u32,
+        display_height: u32,
         timestamp: u64,
     }
 
@@ -853,6 +861,8 @@ mod nvdec {
                 _ctx: ctx,
                 width: 0,
                 height: 0,
+                display_width: 0,
+                display_height: 0,
                 decoded_frames: Vec::new(),
                 rgb_buffer: Vec::new(),
             })
@@ -899,6 +909,8 @@ mod nvdec {
         }
 
         pub fn decode(&mut self, h264_data: &[u8], width: u32, height: u32, timestamp: u64) -> Result<Frame> {
+            self.display_width = width;
+            self.display_height = height;
             self.ensure_decoder(width, height)?;
 
             // Create packet
@@ -915,12 +927,17 @@ mod nvdec {
 
             // Get decoded frame
             if let Some(decoded) = self.decoded_frames.pop() {
-                // Convert NV12 to RGB
-                self.nv12_to_rgb(&decoded.data, decoded.width, decoded.height);
+                // Convert NV12 to RGB, cropping from coded to display dimensions
+                let out_w = decoded.display_width as usize;
+                let out_h = decoded.display_height as usize;
+                let coded_w = decoded.coded_width as usize;
+                let coded_h = decoded.coded_height as usize;
+
+                self.nv12_to_rgb_cropped(&decoded.data, coded_w, coded_h, out_w, out_h);
 
                 Ok(Frame {
-                    width: decoded.width,
-                    height: decoded.height,
+                    width: decoded.display_width,
+                    height: decoded.display_height,
                     data: self.rgb_buffer.clone(),
                     timestamp_us: decoded.timestamp,
                 })
@@ -929,18 +946,25 @@ mod nvdec {
             }
         }
 
-        fn nv12_to_rgb(&mut self, nv12: &[u8], width: u32, height: u32) {
-            let width = width as usize;
-            let height = height as usize;
-            let y_size = width * height;
+        fn nv12_to_rgb_cropped(
+            &mut self,
+            nv12: &[u8],
+            coded_w: usize,
+            coded_h: usize,
+            out_w: usize,
+            out_h: usize,
+        ) {
+            let y_plane_size = coded_w * coded_h;
 
-            self.rgb_buffer.resize(width * height * 3, 0);
+            self.rgb_buffer.resize(out_w * out_h * 3, 0);
 
-            for y in 0..height {
-                for x in 0..width {
-                    let y_val = nv12.get(y * width + x).copied().unwrap_or(0) as f32;
+            for y in 0..out_h {
+                for x in 0..out_w {
+                    // Y plane uses coded_w stride
+                    let y_val = nv12.get(y * coded_w + x).copied().unwrap_or(0) as f32;
 
-                    let uv_idx = y_size + (y / 2) * width + (x / 2) * 2;
+                    // UV plane starts after full coded Y plane, uses coded_w stride
+                    let uv_idx = y_plane_size + (y / 2) * coded_w + (x / 2) * 2;
                     let u = nv12.get(uv_idx).copied().unwrap_or(128) as f32;
                     let v = nv12.get(uv_idx + 1).copied().unwrap_or(128) as f32;
 
@@ -953,7 +977,7 @@ mod nvdec {
                     let g = (1.164 * c - 0.392 * d - 0.813 * e).clamp(0.0, 255.0) as u8;
                     let b = (1.164 * c + 2.017 * d).clamp(0.0, 255.0) as u8;
 
-                    let rgb_idx = (y * width + x) * 3;
+                    let rgb_idx = (y * out_w + x) * 3;
                     self.rgb_buffer[rgb_idx] = r;
                     self.rgb_buffer[rgb_idx + 1] = g;
                     self.rgb_buffer[rgb_idx + 2] = b;
@@ -1099,8 +1123,10 @@ mod nvdec {
             // Store decoded frame
             decoder.decoded_frames.push(DecodedFrame {
                 data: nv12_data,
-                width: decoder.width,
-                height: decoder.height,
+                coded_width: decoder.width,
+                coded_height: decoder.height,
+                display_width: decoder.display_width,
+                display_height: decoder.display_height,
                 timestamp: info.timestamp as u64,
             });
 
