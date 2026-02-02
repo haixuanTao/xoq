@@ -452,25 +452,29 @@ impl CameraClientBuilder {
     async fn connect_moq_inner(path: &str, relay_url: Option<&str>, prefer_h264: bool) -> Result<CameraClientInner> {
         use crate::moq::MoqBuilder;
 
+        eprintln!("[xoq] MoQ connecting to '{}' (prefer_h264={})", path, prefer_h264);
+
         let mut builder = MoqBuilder::new().path(path);
         if let Some(url) = relay_url {
             builder = builder.relay(url);
         }
         let mut conn = builder.connect_subscriber().await?;
+        eprintln!("[xoq] MoQ connected to relay, subscribing to track...");
 
         // Try "video" (H.264 CMAF) track first if H.264 is preferred
         let (track, encoding) = if prefer_h264 {
             match conn.subscribe_track("video").await? {
                 Some(t) => {
-                    tracing::info!("Subscribed to H.264 CMAF video track");
+                    eprintln!("[xoq] Subscribed to H.264 CMAF 'video' track");
                     (t, StreamEncoding::H264)
                 }
                 None => {
+                    eprintln!("[xoq] No 'video' track, falling back to 'camera' (JPEG)");
                     let t = conn
                         .subscribe_track("camera")
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("No camera track found"))?;
-                    tracing::info!("Subscribed to JPEG camera track (video track not available)");
+                    eprintln!("[xoq] Subscribed to JPEG 'camera' track");
                     (t, StreamEncoding::Jpeg)
                 }
             }
@@ -665,6 +669,7 @@ impl CameraClient {
                         #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
                         {
                             // CMAF H.264 over MoQ
+                            let mut cmaf_reads = 0u64;
                             loop {
                                 let mut retries = 0;
                                 let data = loop {
@@ -680,12 +685,25 @@ impl CameraClient {
                                     }
                                 };
 
+                                cmaf_reads += 1;
+                                // Log first few reads and box types for debugging
+                                if cmaf_reads <= 5 {
+                                    let box_type = if data.len() >= 8 {
+                                        String::from_utf8_lossy(&data[4..8]).to_string()
+                                    } else {
+                                        "???".to_string()
+                                    };
+                                    eprintln!(
+                                        "[xoq] CMAF read #{}: {} bytes, first box: '{}', hex: {:02x?}",
+                                        cmaf_reads, data.len(), box_type,
+                                        &data[..data.len().min(16)]
+                                    );
+                                }
+
                                 if !*cmaf_initialized {
                                     // Parse init segment (may be standalone or prepended to keyframe)
                                     match parse_cmaf_init_segment(&data) {
                                         Ok((sps, pps, width, height)) => {
-                                            // Create decoder from SPS/PPS
-                                            // Feed SPS/PPS as Annex B to the decoder to initialize it
                                             let mut annex_b = Vec::new();
                                             annex_b.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
                                             annex_b.extend_from_slice(&sps);
@@ -693,28 +711,24 @@ impl CameraClient {
                                             annex_b.extend_from_slice(&pps);
 
                                             let mut dec = H264Decoder::new()?;
-                                            // Use dimensions from init segment (avc1 box)
                                             let w = if width > 0 { width } else { 1280 };
                                             let h = if height > 0 { height } else { 720 };
-                                            // Initialize decoder with SPS/PPS
                                             let _ = dec.decode(&annex_b, w, h, 0);
                                             *decoder = Some(Arc::new(Mutex::new(dec)));
                                             *cmaf_initialized = true;
                                             *cmaf_width = w;
                                             *cmaf_height = h;
 
-                                            tracing::info!("CMAF H.264 decoder initialized from init segment ({}x{})", w, h);
+                                            eprintln!("[xoq] CMAF H.264 decoder initialized ({}x{})", w, h);
 
                                             // Check if this data also contains media segments (late-joiner combined packet)
                                             match parse_cmaf_media_segment(&data) {
                                                 Ok(nal_units) if !nal_units.is_empty() => {
-                                                    // Has media data too - decode it
                                                     let mut h264_data = Vec::new();
                                                     for nal in &nal_units {
                                                         h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
                                                         h264_data.extend_from_slice(nal);
                                                     }
-                                                    // Prepend SPS/PPS for the first actual decode
                                                     let mut full = annex_b.clone();
                                                     full.extend_from_slice(&h264_data);
 
@@ -724,15 +738,17 @@ impl CameraClient {
                                                     }
                                                 }
                                                 _ => {
-                                                    // Pure init segment, continue to next read
                                                     continue;
                                                 }
                                             }
                                         }
-                                        Err(_) => {
-                                            // Not an init segment - might be a late-join scenario,
-                                            // skip until we get an init segment
-                                            tracing::debug!("Waiting for CMAF init segment...");
+                                        Err(e) => {
+                                            if cmaf_reads <= 10 {
+                                                eprintln!(
+                                                    "[xoq] CMAF read #{}: not init segment ({}) - waiting...",
+                                                    cmaf_reads, e
+                                                );
+                                            }
                                             continue;
                                         }
                                     }
