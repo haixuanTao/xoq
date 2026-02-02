@@ -48,6 +48,7 @@
 //! # }
 //! ```
 
+pub mod cmaf;
 pub mod moq;
 
 #[cfg(feature = "iroh")]

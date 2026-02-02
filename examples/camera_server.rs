@@ -497,10 +497,15 @@ async fn run_camera_server(config: CameraConfig) -> Result<()> {
 
         let result = if let Some(ref moq_path) = config.moq_path {
             if config.use_h264 {
+                #[cfg(all(feature = "nvenc", feature = "camera"))]
+                { run_camera_server_moq_h264_nvenc(&config, moq_path).await }
                 #[cfg(all(feature = "vtenc", any(feature = "camera", feature = "camera-macos")))]
                 { run_camera_server_moq_h264_vtenc(&config, moq_path).await }
-                #[cfg(not(all(feature = "vtenc", any(feature = "camera", feature = "camera-macos"))))]
-                { anyhow::bail!("MoQ H.264 requires the 'vtenc' feature and a camera feature") }
+                #[cfg(not(any(
+                    all(feature = "nvenc", feature = "camera"),
+                    all(feature = "vtenc", any(feature = "camera", feature = "camera-macos"))
+                )))]
+                { anyhow::bail!("MoQ H.264 requires the 'nvenc' or 'vtenc' feature and a camera feature") }
             } else {
                 run_camera_server_moq(&config, moq_path).await
             }
@@ -598,7 +603,7 @@ async fn run_camera_server_moq(config: &CameraConfig, moq_path: &str) -> Result<
 
 #[cfg(all(feature = "vtenc", any(feature = "camera", feature = "camera-macos")))]
 async fn run_camera_server_moq_h264_vtenc(config: &CameraConfig, moq_path: &str) -> Result<()> {
-    use video_toolbox_sys::helpers::{CmafConfig, CmafMuxer};
+    use xoq::cmaf::{CmafConfig, CmafMuxer, NalUnit as CmafNalUnit};
 
     #[cfg(feature = "camera")]
     let camera = Camera::open(config.index, config.width, config.height, config.fps)?;
@@ -660,8 +665,14 @@ async fn run_camera_server_moq_h264_vtenc(config: &CameraConfig, moq_path: &str)
         let dts = pts;
         let duration = (90000 / config.fps) as u32;
 
+        // Convert video_toolbox_sys NalUnits to xoq::cmaf NalUnits
+        let cmaf_nals: Vec<CmafNalUnit> = encoded.nals.iter().map(|n| CmafNalUnit {
+            data: n.data.clone(),
+            nal_type: n.nal_type,
+        }).collect();
+
         // Feed NALs to CmafMuxer; when a segment is ready, send it
-        if let Some(segment) = muxer.add_frame(&encoded.nals, pts, dts, duration, encoded.is_keyframe) {
+        if let Some(segment) = muxer.add_frame(&cmaf_nals, pts, dts, duration, encoded.is_keyframe) {
             // Prepend init segment on keyframes for late-joiner support
             if encoded.is_keyframe {
                 if let Some(ref init) = init_segment {
@@ -679,6 +690,110 @@ async fn run_camera_server_moq_h264_vtenc(config: &CameraConfig, moq_path: &str)
         frame_count += 1;
         if frame_count % 300 == 0 {
             tracing::info!("[cam{}] {} H.264 CMAF frames sent", cam_idx, frame_count);
+        }
+    }
+}
+
+// ============================================================================
+// MoQ H.264 CMAF server (Linux NVENC)
+// ============================================================================
+
+#[cfg(all(feature = "nvenc", feature = "camera"))]
+async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str) -> Result<()> {
+    use xoq::cmaf::{CmafConfig, CmafMuxer, parse_annex_b};
+
+    let camera = Camera::open_with_options(
+        config.index,
+        config.width,
+        config.height,
+        config.fps,
+        CameraOptions { prefer_yuyv: true },
+    )?;
+
+    let actual_width = camera.width();
+    let actual_height = camera.height();
+    let is_yuyv = camera.is_yuyv();
+
+    tracing::info!(
+        "[cam{}] Opened: {}x{} ({}) - MoQ H.264/CMAF NVENC mode",
+        config.index,
+        actual_width,
+        actual_height,
+        camera.format_name()
+    );
+
+    let mut encoder = NvencEncoder::new(actual_width, actual_height, config.fps, config.bitrate)?;
+    tracing::info!("[cam{}] NVENC encoder initialized", config.index);
+
+    let mut muxer = CmafMuxer::new(CmafConfig {
+        fragment_duration_ms: 33, // 1 frame @ 30fps for lowest latency
+        timescale: 90000,
+    });
+
+    let camera = Arc::new(Mutex::new(camera));
+
+    let mut publisher = MoqBuilder::new()
+        .path(moq_path)
+        .connect_publisher()
+        .await?;
+
+    tracing::info!("[cam{}] MoQ path: {} (H.264 CMAF NVENC)", config.index, moq_path);
+
+    let mut track = publisher.create_track("video");
+    let mut init_segment: Option<Vec<u8>> = None;
+    let mut frame_count = 0u64;
+    let cam_idx = config.index;
+
+    loop {
+        let h264_data = {
+            let mut cam = camera.lock().await;
+            let raw_frame = cam.capture_raw()?;
+
+            if is_yuyv {
+                encoder.encode_yuyv(&raw_frame.data, raw_frame.timestamp_us)?
+            } else {
+                let frame = cam.capture()?;
+                encoder.encode_rgb(&frame.data, frame.timestamp_us)?
+            }
+        };
+
+        // Parse Annex B output into structured NAL units
+        let parsed = parse_annex_b(&h264_data);
+
+        // On first keyframe with SPS/PPS: create and send init segment
+        if init_segment.is_none() {
+            if let (Some(ref sps), Some(ref pps)) = (&parsed.sps, &parsed.pps) {
+                let init = muxer.create_init_segment(sps, pps, actual_width, actual_height);
+                track.write(init.clone());
+                init_segment = Some(init);
+                tracing::info!("[cam{}] Sent CMAF init segment", cam_idx);
+            }
+        }
+
+        // Compute timing in timescale 90000
+        let pts = (frame_count as i64) * 90000 / config.fps as i64;
+        let dts = pts;
+        let duration = (90000 / config.fps) as u32;
+
+        // Feed NALs to CmafMuxer; when a segment is ready, send it
+        if let Some(segment) = muxer.add_frame(&parsed.nals, pts, dts, duration, parsed.is_keyframe) {
+            // Prepend init segment on keyframes for late-joiner support
+            if parsed.is_keyframe {
+                if let Some(ref init) = init_segment {
+                    let mut combined = init.clone();
+                    combined.extend_from_slice(&segment);
+                    track.write(combined);
+                } else {
+                    track.write(segment);
+                }
+            } else {
+                track.write(segment);
+            }
+        }
+
+        frame_count += 1;
+        if frame_count % 300 == 0 {
+            tracing::info!("[cam{}] {} H.264 CMAF frames sent (NVENC)", cam_idx, frame_count);
         }
     }
 }
