@@ -86,7 +86,7 @@ impl MoqBuilder {
             .init()?
             .with_publish(origin.consumer);
 
-        let session = client.connect(url).await?;
+        let session = Self::connect_quic_with_retry(&client, url).await?;
 
         Ok(MoqPublisher {
             _session: session,
@@ -105,9 +105,12 @@ impl MoqBuilder {
             .init()?
             .with_consume(origin.producer);
 
-        let session = tokio::time::timeout(Duration::from_secs(10), client.connect(url))
-            .await
-            .map_err(|_| anyhow::anyhow!("MoQ subscriber connection timed out after 10s"))??;
+        let session = tokio::time::timeout(
+            Duration::from_secs(10),
+            Self::connect_quic_with_retry(&client, url),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("MoQ subscriber connection timed out after 10s"))??;
 
         eprintln!("[xoq] MoQ subscriber connected to relay");
 
@@ -115,6 +118,27 @@ impl MoqBuilder {
             origin: origin.consumer,
             _session: session,
         })
+    }
+
+    /// Connect via QUIC, retrying once if the first attempt fails (e.g. due to GSO).
+    ///
+    /// On Linux, the first QUIC send may fail with EIO if the NIC doesn't support
+    /// UDP GSO. quinn-udp then disables GSO on the socket, so a retry succeeds.
+    async fn connect_quic_with_retry(
+        client: &moq_native::Client,
+        url: Url,
+    ) -> Result<moq_lite::Session> {
+        match client.connect(url.clone()).await {
+            Ok(session) => Ok(session),
+            Err(first_err) => {
+                eprintln!(
+                    "[xoq] QUIC connect failed ({}), retrying (GSO now disabled)...",
+                    first_err
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                client.connect(url).await.map_err(Into::into)
+            }
+        }
     }
 }
 
