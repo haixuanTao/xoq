@@ -61,6 +61,16 @@ fn main() {
     }
     rerun_if_changed();
 
+    // Check that nvcc is available — cudarc needs it to detect the CUDA version.
+    // Without it, cudarc may bind to newer APIs than the installed driver supports.
+    if std::process::Command::new("nvcc").arg("--version").output().is_err() {
+        panic!(
+            "nvcc not found. The CUDA toolkit is required for NVENC encoding.\n\
+             Install it with: sudo apt install nvidia-cuda-toolkit\n\
+             Or download from: https://developer.nvidia.com/cuda-downloads"
+        );
+    }
+
     // Link to libraries.
     println!("cargo:rustc-link-lib={}", NVENC_LIB.0);
     println!("cargo:rustc-link-lib={}", NVDEC_LIB.0);
