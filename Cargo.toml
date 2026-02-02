@@ -48,7 +48,7 @@ url = "2"
 bytes = "1"
 rand = "0.9"
 # Hardware video encoding (optional)
-nvidia-video-codec-sdk = { git = "https://github.com/haixuanTao/nvidia-video-codec-sdk", optional = true }
+nvidia-video-codec-sdk = { path = "packages/nvidia-video-codec-sdk", optional = true }
 cudarc = { version = "0.16.4", features = ["cuda-version-from-build-system"], optional = true }
 # macOS AVFoundation camera capture (optional)
 objc2 = { version = "0.6", optional = true }

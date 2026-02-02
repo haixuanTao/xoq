@@ -40,7 +40,7 @@ use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P4_GUID,
-        NV_ENC_TUNING_INFO, NV_ENC_PIC_TYPE,
+        NV_ENC_TUNING_INFO, NV_ENC_PIC_TYPE, NV_ENC_PIC_FLAGS,
     },
     Bitstream, Buffer, Encoder, EncoderInitParams, EncodePictureParams, Session,
 };
@@ -349,7 +349,7 @@ impl NvencEncoder {
             .get_preset_config(
                 NV_ENC_CODEC_H264_GUID,
                 NV_ENC_PRESET_P4_GUID,
-                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_LOW_LATENCY,
+                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
             )
             .map_err(|e| anyhow::anyhow!("Failed to get preset config: {:?}", e))?;
 
@@ -372,7 +372,7 @@ impl NvencEncoder {
         let mut init_params = EncoderInitParams::new(NV_ENC_CODEC_H264_GUID, width, height);
         init_params
             .preset_guid(NV_ENC_PRESET_P4_GUID)
-            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_LOW_LATENCY)
+            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
             .framerate(fps, 1)
             .encode_config(config);
 
@@ -426,10 +426,16 @@ impl NvencEncoder {
             unsafe { lock.write(&self.nv12_buffer) };
         }
 
-        let picture_type = if self.frame_count % self.fps as u64 == 0 {
+        let is_idr = self.frame_count % self.fps as u64 == 0;
+        let picture_type = if is_idr {
             NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR
         } else {
             NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_P
+        };
+        let encode_pic_flags = if is_idr {
+            NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_OUTPUT_SPSPPS as u32
+        } else {
+            0
         };
         self.frame_count += 1;
 
@@ -441,6 +447,7 @@ impl NvencEncoder {
                 EncodePictureParams {
                     input_timestamp: timestamp_us,
                     picture_type,
+                    encode_pic_flags,
                     ..Default::default()
                 },
             )
