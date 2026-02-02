@@ -5784,6 +5784,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "video-toolbox-sys"
 version = "0.2.0"
+source = "git+https://github.com/haixuantao/video-toolbox-sys#ae90dbbea2a1e5870be1b2907f5be4287163b3c9"
 dependencies = [
  "core-foundation 0.9.4",
  "core-foundation-sys 0.8.7",
