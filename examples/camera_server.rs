@@ -349,7 +349,7 @@ impl NvencEncoder {
             .get_preset_config(
                 NV_ENC_CODEC_H264_GUID,
                 NV_ENC_PRESET_P4_GUID,
-                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_LOW_LATENCY,
             )
             .map_err(|e| anyhow::anyhow!("Failed to get preset config: {:?}", e))?;
 
@@ -372,7 +372,7 @@ impl NvencEncoder {
         let mut init_params = EncoderInitParams::new(NV_ENC_CODEC_H264_GUID, width, height);
         init_params
             .preset_guid(NV_ENC_PRESET_P4_GUID)
-            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
+            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_LOW_LATENCY)
             .framerate(fps, 1)
             .encode_config(config);
 
