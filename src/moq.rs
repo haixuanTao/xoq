@@ -62,12 +62,13 @@ impl MoqBuilder {
         let publish_origin = moq_lite::Origin::produce();
         let subscribe_origin = moq_lite::Origin::produce();
 
-        let client = moq_native::ClientConfig::default()
+        let mut client = moq_native::ClientConfig::default()
             .init()?
             .with_publish(publish_origin.consumer)
             .with_consume(subscribe_origin.producer);
+        client.websocket.enabled = false;
 
-        let session = client.connect(url).await?;
+        let session = Self::connect_quic_with_retry(&client, url).await?;
 
         Ok(MoqConnection {
             _session: session,
@@ -82,9 +83,10 @@ impl MoqBuilder {
 
         let origin = moq_lite::Origin::produce();
 
-        let client = moq_native::ClientConfig::default()
+        let mut client = moq_native::ClientConfig::default()
             .init()?
             .with_publish(origin.consumer);
+        client.websocket.enabled = false;
 
         let session = Self::connect_quic_with_retry(&client, url).await?;
 
@@ -101,9 +103,10 @@ impl MoqBuilder {
 
         let origin = moq_lite::Origin::produce();
 
-        let client = moq_native::ClientConfig::default()
+        let mut client = moq_native::ClientConfig::default()
             .init()?
             .with_consume(origin.producer);
+        client.websocket.enabled = false;
 
         let session = tokio::time::timeout(
             Duration::from_secs(10),
