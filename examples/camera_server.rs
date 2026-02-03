@@ -769,7 +769,8 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
 
     let actual_width = camera.width();
     let actual_height = camera.height();
-    let is_yuyv = camera.is_yuyv();
+    let mut use_yuyv = camera.is_yuyv();
+    let expected_yuyv_size = (actual_width * actual_height * 2) as usize;
 
     tracing::info!(
         "[cam{}] Opened: {}x{} ({}) - MoQ H.264/CMAF NVENC mode",
@@ -804,10 +805,22 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
     loop {
         let h264_data = {
             let mut cam = camera.lock().await;
-            let raw_frame = cam.capture_raw()?;
 
-            if is_yuyv {
-                encoder.encode_yuyv(&raw_frame.data, raw_frame.timestamp_us)?
+            if use_yuyv {
+                let raw_frame = cam.capture_raw()?;
+                if raw_frame.data.len() != expected_yuyv_size {
+                    if frame_count == 0 {
+                        tracing::warn!(
+                            "[cam{}] YUYV buffer size mismatch: got {} expected {} — falling back to RGB path",
+                            cam_idx, raw_frame.data.len(), expected_yuyv_size
+                        );
+                    }
+                    use_yuyv = false;
+                    let frame = cam.capture()?;
+                    encoder.encode_rgb(&frame.data, frame.timestamp_us)?
+                } else {
+                    encoder.encode_yuyv(&raw_frame.data, raw_frame.timestamp_us)?
+                }
             } else {
                 let frame = cam.capture()?;
                 encoder.encode_rgb(&frame.data, frame.timestamp_us)?
@@ -956,7 +969,8 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
 
     let actual_width = camera.width();
     let actual_height = camera.height();
-    let is_yuyv = camera.is_yuyv();
+    let mut use_yuyv = camera.is_yuyv();
+    let expected_yuyv_size = (actual_width * actual_height * 2) as usize;
 
     tracing::info!(
         "[cam{}] Opened: {}x{} ({}) - H.264/NVENC mode",
@@ -1010,11 +1024,27 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
         loop {
             let h264_data = {
                 let mut cam = camera.lock().await;
-                let raw_frame = cam.capture_raw()?;
-
                 let mut enc = encoder.lock().await;
-                if is_yuyv {
-                    enc.encode_yuyv(&raw_frame.data, raw_frame.timestamp_us)?
+
+                if use_yuyv {
+                    let raw_frame = cam.capture_raw()?;
+                    // Validate buffer size — V4L2 may report YUYV but provide
+                    // wrong-sized buffers for non-standard resolutions.
+                    if raw_frame.data.len() != expected_yuyv_size {
+                        if frame_count == 0 {
+                            tracing::warn!(
+                                "[cam{}] YUYV buffer size mismatch: got {} expected {} — falling back to RGB path",
+                                cam_idx, raw_frame.data.len(), expected_yuyv_size
+                            );
+                        }
+                        use_yuyv = false;
+                        // This frame's raw data is unusable as YUYV; capture a
+                        // fresh frame through the decode path instead.
+                        let frame = cam.capture()?;
+                        enc.encode_rgb(&frame.data, frame.timestamp_us)?
+                    } else {
+                        enc.encode_yuyv(&raw_frame.data, raw_frame.timestamp_us)?
+                    }
                 } else {
                     let frame = cam.capture()?;
                     enc.encode_rgb(&frame.data, frame.timestamp_us)?

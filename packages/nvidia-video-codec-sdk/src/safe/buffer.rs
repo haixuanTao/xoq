@@ -442,15 +442,10 @@ impl BufferLock<'_, '_> {
             .copy_to(self.data_ptr.cast::<u8>(), data.len());
     }
 
-    /// Write NV12 data to the buffer, handling pitch and macroblock-aligned
-    /// height correctly.
+    /// Write NV12 data to the buffer, handling pitch (stride) correctly.
     ///
     /// `data` must be tightly packed NV12: `width * height` bytes of Y plane
     /// followed by `width * (height / 2)` bytes of interleaved UV plane.
-    ///
-    /// NVENC internally rounds height up to the next multiple of 16 for
-    /// macroblock alignment, so the UV plane in the hardware buffer starts at
-    /// `pitch * aligned_height`, NOT `pitch * height`.
     ///
     /// # Safety
     ///
@@ -461,33 +456,20 @@ impl BufferLock<'_, '_> {
         let p = self.pitch as usize;
         let dst = self.data_ptr.cast::<u8>();
 
-        // NVENC rounds height up to the next multiple of 16 (macroblock size).
-        // The UV plane starts at pitch * aligned_height in the hardware buffer.
-        let aligned_h = (h + 15) & !15;
-
         // Copy Y plane row by row
         for y in 0..h {
             data.as_ptr()
                 .add(y * w)
                 .copy_to_nonoverlapping(dst.add(y * p), w);
         }
-        // Zero-fill Y padding rows (between display and aligned height)
-        for y in h..aligned_h {
-            dst.add(y * p).write_bytes(0, p);
-        }
-        // Copy UV plane row by row
+        // Copy UV plane row by row (UV starts at pitch * height in the buffer)
         let uv_h = h / 2;
         let src_uv = w * h;
-        let dst_uv = p * aligned_h;
+        let dst_uv = p * h;
         for y in 0..uv_h {
             data.as_ptr()
                 .add(src_uv + y * w)
                 .copy_to_nonoverlapping(dst.add(dst_uv + y * p), w);
-        }
-        // Zero-fill UV padding rows
-        let aligned_uv_h = aligned_h / 2;
-        for y in uv_h..aligned_uv_h {
-            dst.add(dst_uv + y * p).write_bytes(0, p);
         }
     }
 }
