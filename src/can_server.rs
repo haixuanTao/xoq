@@ -144,32 +144,6 @@ fn can_reader_thread(
     }
 }
 
-/// Maximum retries on ENOBUFS before dropping a frame.
-const WRITE_RETRIES: u32 = 50;
-/// Delay between retries on ENOBUFS (100us). Total max backoff = 5ms.
-const WRITE_RETRY_DELAY: Duration = Duration::from_micros(100);
-
-/// Retry a CAN write on ENOBUFS (kernel tx queue full).
-///
-/// CAN sockets return ENOBUFS immediately regardless of SO_SNDTIMEO,
-/// so we must retry in userspace with a short sleep between attempts.
-fn write_with_retry<T>(mut write_fn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<()> {
-    for attempt in 0..WRITE_RETRIES {
-        match write_fn() {
-            Ok(_) => return Ok(()),
-            Err(e) if e.raw_os_error() == Some(105) => {
-                // ENOBUFS — kernel txqueue full, back off and retry
-                if attempt == 0 {
-                    tracing::trace!("CAN txqueue full, backing off");
-                }
-                std::thread::sleep(WRITE_RETRY_DELAY);
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(std::io::Error::from_raw_os_error(105))
-}
-
 /// Writer thread: receives frames from a std mpsc channel and writes them to socketcan.
 fn can_writer_thread(
     interface: String,
@@ -194,14 +168,14 @@ fn can_writer_thread(
         while let Some(frame) = rx.blocking_recv() {
             let result = match &frame {
                 AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN frame conversion error on write: {}", e);
                         continue;
                     }
                 },
                 AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN FD frame conversion error on write: {}", e);
                         continue;
@@ -229,7 +203,7 @@ fn can_writer_thread(
         while let Some(frame) = rx.blocking_recv() {
             let result = match &frame {
                 AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN frame conversion error on write: {}", e);
                         continue;
