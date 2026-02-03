@@ -265,8 +265,8 @@ impl CanServer {
     ) -> Result<Self> {
         // CAN→Network channel (tokio mpsc for async receiver)
         let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(256);
-        // Network→CAN channel (bounded — backpressures network when CAN bus is busy)
-        let (can_write_tx, can_write_rx) = std::sync::mpsc::sync_channel::<AnyCanFrame>(8);
+        // Network→CAN channel (bounded to match Linux CAN txqueuelen default of 10)
+        let (can_write_tx, can_write_rx) = std::sync::mpsc::sync_channel::<AnyCanFrame>(10);
 
         // Spawn reader thread
         let (reader_init_tx, reader_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
