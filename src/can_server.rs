@@ -264,9 +264,13 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
 /// EMA smoothing factor for interval estimation (weight given to new measurement).
 const EMA_ALPHA: f64 = 0.2;
 
-/// Playback interval multiplier. 1.0 = play at exactly the measured arrival
-/// rate. The buffer fills naturally from arrival jitter (early batches pile up).
-const PLAYBACK_INTERVAL_MULTIPLIER: f64 = 1.0;
+/// When the buffer depth exceeds this, play immediately (skip the interval wait)
+/// to drain the backlog and avoid drops.
+const BUFFER_CATCHUP_THRESHOLD: usize = 1;
+
+/// Delay between individual CAN frame writes within a batch, to avoid
+/// overflowing the kernel CAN socket buffer (ENOBUFS / os error 105).
+const INTER_FRAME_DELAY: Duration = Duration::from_micros(200);
 
 /// Number of consecutive regular-cadence multi-frame batches required to activate buffering.
 const STREAMING_THRESHOLD: u32 = 15;
@@ -477,6 +481,17 @@ impl Drop for JitterStats {
     }
 }
 
+/// Write all frames in a batch with a small delay between each to avoid
+/// overflowing the kernel CAN socket buffer (ENOBUFS).
+fn write_batch(batch: &[AnyCanFrame], write_frame: &mut impl FnMut(&AnyCanFrame)) {
+    for (i, f) in batch.iter().enumerate() {
+        write_frame(f);
+        if i + 1 < batch.len() {
+            std::thread::sleep(INTER_FRAME_DELAY);
+        }
+    }
+}
+
 /// Core jitter-buffer loop shared by both FD and non-FD writer paths.
 ///
 /// Starts in **passthrough mode** where frames are written to CAN immediately.
@@ -565,21 +580,22 @@ fn jitter_buffer_loop(
                 stats.max_buffer_depth = buffer.len();
             }
 
-            // Playback: write one batch per interval tick
+            // Playback: write one batch per interval tick, or immediately if
+            // the buffer is building up (catch-up mode).
             let now = Instant::now();
-            let playback_interval = Duration::from_secs_f64(
-                interval_estimate.as_secs_f64() * PLAYBACK_INTERVAL_MULTIPLIER,
-            );
-            let should_play = match last_play_time {
-                Some(t) => now.duration_since(t) >= playback_interval,
-                None => !buffer.is_empty(),
+            let catching_up = buffer.len() > BUFFER_CATCHUP_THRESHOLD;
+            let should_play = if catching_up {
+                !buffer.is_empty()
+            } else {
+                match last_play_time {
+                    Some(t) => now.duration_since(t) >= interval_estimate,
+                    None => !buffer.is_empty(),
+                }
             };
 
             if should_play {
                 if let Some(batch) = buffer.pop_front() {
-                    for f in &batch {
-                        write_frame(f);
-                    }
+                    write_batch(&batch, &mut write_frame);
                     if let Some(prev) = last_play_time {
                         stats.record_playback_interval(now.duration_since(prev));
                     }
@@ -591,9 +607,7 @@ fn jitter_buffer_loop(
                         "Jitter buffer empty, replaying last batch ({} frames)",
                         batch.len()
                     );
-                    for f in batch {
-                        write_frame(f);
-                    }
+                    write_batch(batch, &mut write_frame);
                     if let Some(prev) = last_play_time {
                         stats.record_playback_interval(now.duration_since(prev));
                     }
@@ -635,8 +649,8 @@ fn jitter_buffer_loop(
 
             // Wait for more data or next playback tick
             let wait = match last_play_time {
-                Some(t) => playback_interval.saturating_sub(now.duration_since(t)),
-                None => playback_interval,
+                Some(t) => interval_estimate.saturating_sub(now.duration_since(t)),
+                None => interval_estimate,
             };
             let wait = wait.max(Duration::from_micros(100));
             let deadline = Instant::now() + wait;
