@@ -236,8 +236,8 @@ impl CanServer {
         enable_fd: bool,
         identity_path: Option<&str>,
     ) -> Result<Self> {
-        // CAN→Network channel (tokio mpsc for async receiver)
-        let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(256);
+        // CAN→Network channel (small to avoid batching stale responses)
+        let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(16);
         // Network→CAN channel (bounded — backpressures through QUIC when CAN bus is busy)
         let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(16);
 
@@ -447,8 +447,8 @@ async fn handle_connection(
             // Encode first frame
             batch_buf.extend_from_slice(&wire::encode(&first));
 
-            // Greedily collect more ready frames (up to 64 total)
-            for _ in 1..64 {
+            // Greedily collect more ready frames (up to 8 total)
+            for _ in 1..8 {
                 match can_read_rx.try_recv() {
                     Ok(frame) => batch_buf.extend_from_slice(&wire::encode(&frame)),
                     Err(_) => break,
