@@ -592,6 +592,23 @@ fn jitter_buffer_loop(
                 return;
             }
 
+            // Deactivate after 5s idle (client likely disconnected or stopped)
+            if let Some(last_arrival) = last_batch_arrival {
+                if now.duration_since(last_arrival) > Duration::from_secs(5) {
+                    streaming = false;
+                    consecutive_regular = 0;
+                    while let Some(batch) = buffer.pop_front() {
+                        for f in &batch {
+                            write_frame(f);
+                        }
+                    }
+                    last_played_batch = None;
+                    last_play_time = None;
+                    tracing::info!("Jitter buffer deactivated (5s idle)");
+                    break;
+                }
+            }
+
             // Wait for more data or next playback tick
             let wait = match last_play_time {
                 Some(t) => playback_interval.saturating_sub(now.duration_since(t)),
