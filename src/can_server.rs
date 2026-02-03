@@ -172,24 +172,34 @@ fn can_writer_thread(
         let _ = init_tx.send(Ok(()));
 
         let write_fn = |frame: &AnyCanFrame| {
-            let result = match frame {
-                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
-                    Err(e) => {
-                        tracing::warn!("CAN frame conversion error on write: {}", e);
-                        return;
-                    }
-                },
-                AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
-                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
-                    Err(e) => {
-                        tracing::warn!("CAN FD frame conversion error on write: {}", e);
-                        return;
-                    }
-                },
-            };
-            if let Err(e) = result {
-                tracing::warn!("CAN write error (dropping frame): {}", e);
+            for attempt in 0..4u32 {
+                let result = match frame {
+                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                        Ok(sf) => socket.write_frame(&sf).map(|_| ()),
+                        Err(e) => {
+                            tracing::warn!("CAN frame conversion error on write: {}", e);
+                            return;
+                        }
+                    },
+                    AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
+                        Ok(sf) => socket.write_frame(&sf).map(|_| ()),
+                        Err(e) => {
+                            tracing::warn!("CAN FD frame conversion error on write: {}", e);
+                            return;
+                        }
+                    },
+                };
+                if result.is_ok() {
+                    return;
+                }
+                let err = result.unwrap_err();
+                if err.raw_os_error() == Some(105) && attempt < 3 {
+                    // ENOBUFS: kernel TX queue full, wait for bus to drain
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                tracing::warn!("CAN write error (dropping frame): {}", err);
+                return;
             }
         };
 
@@ -215,21 +225,31 @@ fn can_writer_thread(
         let _ = init_tx.send(Ok(()));
 
         let write_fn = |frame: &AnyCanFrame| {
-            let result = match frame {
-                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => socket.write_frame(&sf).map(|_| ()),
-                    Err(e) => {
-                        tracing::warn!("CAN frame conversion error on write: {}", e);
+            for attempt in 0..4u32 {
+                let result = match frame {
+                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                        Ok(sf) => socket.write_frame(&sf).map(|_| ()),
+                        Err(e) => {
+                            tracing::warn!("CAN frame conversion error on write: {}", e);
+                            return;
+                        }
+                    },
+                    AnyCanFrame::CanFd(_) => {
+                        tracing::warn!("CAN FD frame on standard CAN socket, dropping");
                         return;
                     }
-                },
-                AnyCanFrame::CanFd(_) => {
-                    tracing::warn!("CAN FD frame on standard CAN socket, dropping");
+                };
+                if result.is_ok() {
                     return;
                 }
-            };
-            if let Err(e) = result {
-                tracing::warn!("CAN write error (dropping frame): {}", e);
+                let err = result.unwrap_err();
+                if err.raw_os_error() == Some(105) && attempt < 3 {
+                    // ENOBUFS: kernel TX queue full, wait for bus to drain
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                tracing::warn!("CAN write error (dropping frame): {}", err);
+                return;
             }
         };
 
