@@ -307,6 +307,7 @@ fn collect_batches(
     last_batch_arrival: &mut Option<Instant>,
     interval_estimate: &mut Duration,
     consecutive_regular: &mut u32,
+    stats: &mut JitterStats,
 ) -> bool {
     let mut disconnected = false;
 
@@ -323,6 +324,7 @@ fn collect_batches(
                             last_batch_arrival,
                             interval_estimate,
                             consecutive_regular,
+                            stats,
                         );
                     }
                 }
@@ -337,6 +339,7 @@ fn collect_batches(
                         last_batch_arrival,
                         interval_estimate,
                         consecutive_regular,
+                        stats,
                     );
                 }
                 return true;
@@ -349,11 +352,107 @@ fn collect_batches(
                         last_batch_arrival,
                         interval_estimate,
                         consecutive_regular,
+                        stats,
                     );
                 }
                 return false;
             }
         }
+    }
+}
+
+/// Statistics collected during jitter buffer operation.
+struct JitterStats {
+    /// Total batches received from the network.
+    batches_received: u64,
+    /// Batches played out to CAN (includes replays).
+    batches_played: u64,
+    /// Batches replayed because the buffer was empty.
+    batches_replayed: u64,
+    /// Batches dropped because the buffer was full.
+    batches_dropped: u64,
+    /// Inter-batch arrival intervals (for jitter calculation).
+    arrival_intervals: Vec<f64>,
+    /// Inter-playback intervals (for jitter calculation).
+    playback_intervals: Vec<f64>,
+    /// Peak buffer depth observed.
+    max_buffer_depth: usize,
+}
+
+impl JitterStats {
+    fn new() -> Self {
+        Self {
+            batches_received: 0,
+            batches_played: 0,
+            batches_replayed: 0,
+            batches_dropped: 0,
+            arrival_intervals: Vec::new(),
+            playback_intervals: Vec::new(),
+            max_buffer_depth: 0,
+        }
+    }
+
+    fn record_arrival_interval(&mut self, interval: Duration) {
+        self.arrival_intervals.push(interval.as_secs_f64() * 1000.0);
+    }
+
+    fn record_playback_interval(&mut self, interval: Duration) {
+        self.playback_intervals.push(interval.as_secs_f64() * 1000.0);
+    }
+
+    fn print_summary(&self) {
+        if self.batches_received == 0 {
+            return;
+        }
+
+        let arrival_jitter = Self::compute_jitter(&self.arrival_intervals);
+        let playback_jitter = Self::compute_jitter(&self.playback_intervals);
+
+        tracing::warn!("=== Jitter Buffer Stats ===");
+        tracing::warn!(
+            "Batches: {} received, {} played, {} replayed, {} dropped",
+            self.batches_received,
+            self.batches_played,
+            self.batches_replayed,
+            self.batches_dropped,
+        );
+        tracing::warn!("Peak buffer depth: {}", self.max_buffer_depth);
+
+        if let Some((mean, stddev, min, max)) = arrival_jitter {
+            tracing::warn!(
+                "Arrival intervals:  mean={:.1}ms stddev={:.1}ms min={:.1}ms max={:.1}ms",
+                mean, stddev, min, max,
+            );
+        }
+        if let Some((mean, stddev, min, max)) = playback_jitter {
+            tracing::warn!(
+                "Playback intervals: mean={:.1}ms stddev={:.1}ms min={:.1}ms max={:.1}ms",
+                mean, stddev, min, max,
+            );
+        }
+
+        if let (Some((_, arr_std, _, _)), Some((_, play_std, _, _))) =
+            (arrival_jitter, playback_jitter)
+        {
+            if arr_std > 0.001 {
+                let reduction = ((arr_std - play_std) / arr_std * 100.0).max(0.0);
+                tracing::warn!("Jitter reduction: {:.0}%", reduction);
+            }
+        }
+    }
+
+    /// Returns (mean, stddev, min, max) in ms, or None if not enough data.
+    fn compute_jitter(intervals: &[f64]) -> Option<(f64, f64, f64, f64)> {
+        if intervals.len() < 2 {
+            return None;
+        }
+        let n = intervals.len() as f64;
+        let mean = intervals.iter().sum::<f64>() / n;
+        let variance = intervals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+        let stddev = variance.sqrt();
+        let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = intervals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        Some((mean, stddev, min, max))
     }
 }
 
@@ -364,7 +463,7 @@ fn collect_batches(
 /// (within [`MIN_INTERVAL`]–[`MAX_INTERVAL`]), switches to **buffered mode**
 /// where batches are held in a ring buffer and played out at a steady measured
 /// rate. Falls back to passthrough when traffic goes idle (no batch for 2×
-/// the estimated interval).
+/// the estimated interval). Prints jitter statistics on exit.
 fn jitter_buffer_loop(
     mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     mut write_frame: impl FnMut(&AnyCanFrame),
@@ -378,12 +477,16 @@ fn jitter_buffer_loop(
     let mut last_played_batch: Option<Vec<AnyCanFrame>> = None;
     let mut consecutive_regular: u32 = 0;
     let mut streaming = false;
+    let mut stats = JitterStats::new();
 
     loop {
         // --- Block until the next frame arrives ---
         let frame = match rx.blocking_recv() {
             Some(f) => f,
-            None => return,
+            None => {
+                stats.print_summary();
+                return;
+            }
         };
         let now = Instant::now();
         current_batch.push(frame);
@@ -398,6 +501,7 @@ fn jitter_buffer_loop(
             &mut last_batch_arrival,
             &mut interval_estimate,
             &mut consecutive_regular,
+            &mut stats,
         );
 
         // --- Decide mode: activate streaming after enough regular batches ---
@@ -420,6 +524,7 @@ fn jitter_buffer_loop(
             last_play_time = Some(Instant::now());
 
             if disconnected {
+                stats.print_summary();
                 return;
             }
             continue;
@@ -427,6 +532,11 @@ fn jitter_buffer_loop(
 
         // --- Streaming / buffered mode ---
         loop {
+            // Track buffer depth
+            if buffer.len() > stats.max_buffer_depth {
+                stats.max_buffer_depth = buffer.len();
+            }
+
             // Playback: write one batch per interval tick
             let now = Instant::now();
             let should_play = match last_play_time {
@@ -439,6 +549,10 @@ fn jitter_buffer_loop(
                     for f in &batch {
                         write_frame(f);
                     }
+                    if let Some(prev) = last_play_time {
+                        stats.record_playback_interval(now.duration_since(prev));
+                    }
+                    stats.batches_played += 1;
                     last_played_batch = Some(batch);
                     last_play_time = Some(now);
                 } else if let Some(ref batch) = last_played_batch {
@@ -449,6 +563,11 @@ fn jitter_buffer_loop(
                     for f in batch {
                         write_frame(f);
                     }
+                    if let Some(prev) = last_play_time {
+                        stats.record_playback_interval(now.duration_since(prev));
+                    }
+                    stats.batches_replayed += 1;
+                    stats.batches_played += 1;
                     last_play_time = Some(now);
                 }
             }
@@ -478,6 +597,7 @@ fn jitter_buffer_loop(
                         write_frame(f);
                     }
                 }
+                stats.print_summary();
                 return;
             }
 
@@ -504,6 +624,7 @@ fn jitter_buffer_loop(
                         &mut last_batch_arrival,
                         &mut interval_estimate,
                         &mut consecutive_regular,
+                        &mut stats,
                     );
                 }
                 None if disc => {
@@ -512,6 +633,7 @@ fn jitter_buffer_loop(
                             write_frame(f);
                         }
                     }
+                    stats.print_summary();
                     return;
                 }
                 None => {
@@ -530,9 +652,12 @@ fn finalize_batch(
     last_batch_arrival: &mut Option<Instant>,
     interval_estimate: &mut Duration,
     consecutive_regular: &mut u32,
+    stats: &mut JitterStats,
 ) {
     let now = Instant::now();
     let batch = std::mem::take(current_batch);
+
+    stats.batches_received += 1;
 
     tracing::debug!(
         "Batch complete: {} frames, buffer depth: {}",
@@ -543,6 +668,8 @@ fn finalize_batch(
     // Update interval estimate from inter-batch timing
     if let Some(prev) = *last_batch_arrival {
         let measured = now.duration_since(prev);
+        stats.record_arrival_interval(measured);
+
         if measured >= MIN_INTERVAL && measured <= MAX_INTERVAL {
             let est = interval_estimate.as_secs_f64();
             let meas = measured.as_secs_f64();
@@ -566,6 +693,7 @@ fn finalize_batch(
     // Enforce buffer cap — drop oldest if full
     if buffer.len() >= BUFFER_CAP {
         let dropped = buffer.pop_front().unwrap();
+        stats.batches_dropped += 1;
         tracing::debug!(
             "Jitter buffer full, dropping oldest batch ({} frames)",
             dropped.len()
