@@ -247,7 +247,7 @@ fn can_writer_thread(
 const BATCH_GAP: Duration = Duration::from_millis(2);
 
 /// Maximum batches held in the jitter buffer.
-const BUFFER_CAP: usize = 30;
+const BUFFER_CAP: usize = 200;
 
 /// Minimum playback interval clamp.
 const MIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -260,6 +260,12 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
 
 /// EMA smoothing factor for interval estimation (weight given to new measurement).
 const EMA_ALPHA: f64 = 0.2;
+
+/// Playback interval multiplier. >1.0 means playback is slightly slower than
+/// arrival, which causes the buffer to gradually fill and stay near the cap.
+/// This provides maximum jitter absorption at the cost of dropping the oldest
+/// (stalest) batches when the buffer is full. 1.05 = 5% slower.
+const PLAYBACK_INTERVAL_MULTIPLIER: f64 = 1.05;
 
 /// Number of consecutive regular-cadence multi-frame batches required to activate buffering.
 const STREAMING_THRESHOLD: u32 = 15;
@@ -539,8 +545,11 @@ fn jitter_buffer_loop(
 
             // Playback: write one batch per interval tick
             let now = Instant::now();
+            let playback_interval = Duration::from_secs_f64(
+                interval_estimate.as_secs_f64() * PLAYBACK_INTERVAL_MULTIPLIER,
+            );
             let should_play = match last_play_time {
-                Some(t) => now.duration_since(t) >= interval_estimate,
+                Some(t) => now.duration_since(t) >= playback_interval,
                 None => !buffer.is_empty(),
             };
 
@@ -603,8 +612,8 @@ fn jitter_buffer_loop(
 
             // Wait for more data or next playback tick
             let wait = match last_play_time {
-                Some(t) => interval_estimate.saturating_sub(now.duration_since(t)),
-                None => interval_estimate,
+                Some(t) => playback_interval.saturating_sub(now.duration_since(t)),
+                None => playback_interval,
             };
             let wait = wait.max(Duration::from_micros(100));
             let deadline = Instant::now() + wait;
