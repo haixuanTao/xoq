@@ -771,8 +771,9 @@ impl CanServer {
     ) -> Result<Self> {
         // CAN→Network channel (small to avoid batching stale responses)
         let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(16);
-        // Network→CAN channel (bounded — backpressures through QUIC when CAN bus is busy)
-        let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(16);
+        // Network→CAN channel — sized to hold several control cycles (8 motors each)
+        // so network bursts after jitter don't drop frames before the jitter buffer sees them.
+        let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(128);
 
         // Spawn reader thread
         let (reader_init_tx, reader_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
