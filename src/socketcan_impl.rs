@@ -383,7 +383,7 @@ impl RemoteCanSocket {
                 ClientInner::Iroh { send, .. } => {
                     let mut s = send.lock().await;
                     s.write_all(data).await?;
-                    s.flush().await?; // Flush immediately to avoid buffering delays
+                    // Don't flush here — writes are coalesced and flushed on recv
                 }
                 ClientInner::Moq { conn } => {
                     let mut c = conn.lock().await;
@@ -420,6 +420,15 @@ impl RemoteCanSocket {
     fn read_raw_with_timeout(&mut self) -> Result<Option<Vec<u8>>> {
         let timeout = self.timeout;
         let result = self.runtime.block_on(async {
+            // Flush any pending writes before reading — coalesces the entire
+            // send batch (e.g. 8 motor commands) into a single QUIC flush.
+            match &self.client {
+                ClientInner::Iroh { send, .. } => {
+                    let mut s = send.lock().await;
+                    s.flush().await.ok();
+                }
+                ClientInner::Moq { .. } => {}
+            }
             tokio::time::timeout(timeout, async {
                 let mut temp_buf = vec![0u8; 128];
                 match &self.client {
