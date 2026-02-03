@@ -581,24 +581,6 @@ fn jitter_buffer_loop(
                 }
             }
 
-            // Check for idle: if no batch for 2× the interval, drop back to passthrough
-            if let Some(last_arrival) = last_batch_arrival {
-                if now.duration_since(last_arrival) > interval_estimate * 2 {
-                    streaming = false;
-                    consecutive_regular = 0;
-                    // Flush remaining buffer
-                    while let Some(batch) = buffer.pop_front() {
-                        for f in &batch {
-                            write_frame(f);
-                        }
-                    }
-                    last_played_batch = None;
-                    last_play_time = None;
-                    tracing::info!("Jitter buffer deactivated (idle)");
-                    break; // Back to outer loop (passthrough / blocking recv)
-                }
-            }
-
             if disconnected {
                 // Flush remaining
                 while let Some(batch) = buffer.pop_front() {
