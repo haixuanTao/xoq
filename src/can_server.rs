@@ -21,8 +21,8 @@ use crate::iroh::{IrohConnection, IrohServerBuilder};
 /// A server that bridges a local CAN interface to remote clients over iroh P2P.
 pub struct CanServer {
     server_id: String,
-    /// Sender for frames to write to CAN interface (bounded tokio channel for async backpressure).
-    can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
+    /// Sender for frames to write to CAN interface (std channel — writer thread blocks on recv).
+    can_write_tx: std::sync::mpsc::Sender<AnyCanFrame>,
     /// Receiver for frames read from CAN interface.
     /// Wrapped in `Mutex<Option<>>` so ownership can be transferred to/from connection tasks.
     /// The Mutex is held only for a quick `take()`/`replace()` swap, never across awaits.
@@ -175,7 +175,7 @@ fn write_with_retry(mut write_fn: impl FnMut() -> std::io::Result<()>) -> std::i
 fn can_writer_thread(
     interface: String,
     enable_fd: bool,
-    mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    rx: std::sync::mpsc::Receiver<AnyCanFrame>,
     init_tx: std::sync::mpsc::SyncSender<Result<()>>,
 ) {
     if enable_fd {
@@ -192,26 +192,42 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        while let Some(frame) = rx.blocking_recv() {
-            let result = match &frame {
-                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                    Err(e) => {
-                        tracing::warn!("CAN frame conversion error on write: {}", e);
-                        continue;
-                    }
-                },
-                AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                    Err(e) => {
-                        tracing::warn!("CAN FD frame conversion error on write: {}", e);
-                        continue;
-                    }
-                },
+        let mut latest: std::collections::BTreeMap<u32, AnyCanFrame> = std::collections::BTreeMap::new();
+        loop {
+            let frame = match rx.recv() {
+                Ok(f) => f,
+                Err(_) => break,
             };
-            if let Err(e) = result {
-                tracing::warn!("CAN write error (dropping frame): {}", e);
+            latest.insert(frame.id(), frame);
+
+            // Drain all pending, keep only latest per CAN ID
+            while let Ok(frame) = rx.try_recv() {
+                latest.insert(frame.id(), frame);
             }
+
+            // Write latest frame for each motor (deterministic order by CAN ID)
+            for (_, frame) in latest.iter() {
+                let result = match frame {
+                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                        Err(e) => {
+                            tracing::warn!("CAN frame conversion error on write: {}", e);
+                            continue;
+                        }
+                    },
+                    AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
+                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                        Err(e) => {
+                            tracing::warn!("CAN FD frame conversion error on write: {}", e);
+                            continue;
+                        }
+                    },
+                };
+                if let Err(e) = result {
+                    tracing::warn!("CAN write error (dropping frame): {}", e);
+                }
+            }
+            latest.clear();
         }
     } else {
         let socket = match socketcan::CanSocket::open(&interface) {
@@ -227,23 +243,39 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        while let Some(frame) = rx.blocking_recv() {
-            let result = match &frame {
-                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                    Err(e) => {
-                        tracing::warn!("CAN frame conversion error on write: {}", e);
+        let mut latest: std::collections::BTreeMap<u32, AnyCanFrame> = std::collections::BTreeMap::new();
+        loop {
+            let frame = match rx.recv() {
+                Ok(f) => f,
+                Err(_) => break,
+            };
+            latest.insert(frame.id(), frame);
+
+            // Drain all pending, keep only latest per CAN ID
+            while let Ok(frame) = rx.try_recv() {
+                latest.insert(frame.id(), frame);
+            }
+
+            // Write latest frame for each motor (deterministic order by CAN ID)
+            for (_, frame) in latest.iter() {
+                let result = match frame {
+                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                        Err(e) => {
+                            tracing::warn!("CAN frame conversion error on write: {}", e);
+                            continue;
+                        }
+                    },
+                    AnyCanFrame::CanFd(_) => {
+                        tracing::warn!("CAN FD frame on standard CAN socket, dropping");
                         continue;
                     }
-                },
-                AnyCanFrame::CanFd(_) => {
-                    tracing::warn!("CAN FD frame on standard CAN socket, dropping");
-                    continue;
+                };
+                if let Err(e) = result {
+                    tracing::warn!("CAN write error (dropping frame): {}", e);
                 }
-            };
-            if let Err(e) = result {
-                tracing::warn!("CAN write error (dropping frame): {}", e);
             }
+            latest.clear();
         }
     }
 }
@@ -265,8 +297,8 @@ impl CanServer {
     ) -> Result<Self> {
         // CAN→Network channel (tokio mpsc for async receiver)
         let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(256);
-        // Network→CAN channel (bounded — async send backpressures network when CAN bus is busy)
-        let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(10);
+        // Network→CAN channel (std mpsc — writer thread blocks on recv)
+        let (can_write_tx, can_write_rx) = std::sync::mpsc::channel::<AnyCanFrame>();
 
         // Spawn reader thread
         let (reader_init_tx, reader_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
@@ -425,7 +457,7 @@ impl CanServer {
 async fn handle_connection(
     conn: IrohConnection,
     mut can_read_rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
-    can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
+    can_write_tx: std::sync::mpsc::Sender<AnyCanFrame>,
     cancel: CancellationToken,
 ) -> (Result<()>, tokio::sync::mpsc::Receiver<AnyCanFrame>) {
     let stream = match conn.accept_stream().await {
@@ -520,15 +552,9 @@ async fn handle_connection(
                                                 frame.id(),
                                                 consumed
                                             );
-                                            match can_write_tx.try_send(frame) {
-                                                Ok(()) => {}
-                                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                                    tracing::trace!("CAN write channel full, dropping frame");
-                                                }
-                                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                                    tracing::error!("CAN writer thread died");
-                                                    break;
-                                                }
+                                            if can_write_tx.send(frame).is_err() {
+                                                tracing::error!("CAN writer thread died");
+                                                break;
                                             }
                                             pending.drain(..consumed);
                                         }
