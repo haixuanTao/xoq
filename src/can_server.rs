@@ -312,6 +312,8 @@ fn collect_batches(
     interval_estimate: &mut Duration,
     consecutive_regular: &mut u32,
     stats: &mut JitterStats,
+    streaming_start: Option<Instant>,
+    streaming_batch_count: &mut u64,
 ) -> bool {
     let mut disconnected = false;
 
@@ -329,6 +331,8 @@ fn collect_batches(
                             interval_estimate,
                             consecutive_regular,
                             stats,
+                            streaming_start,
+                            streaming_batch_count,
                         );
                     }
                 }
@@ -344,6 +348,8 @@ fn collect_batches(
                         interval_estimate,
                         consecutive_regular,
                         stats,
+                        streaming_start,
+                        streaming_batch_count,
                     );
                 }
                 return true;
@@ -357,6 +363,8 @@ fn collect_batches(
                         interval_estimate,
                         consecutive_regular,
                         stats,
+                        streaming_start,
+                        streaming_batch_count,
                     );
                 }
                 return false;
@@ -482,6 +490,9 @@ fn jitter_buffer_loop(
     let mut consecutive_regular: u32 = 0;
     let mut streaming = false;
     let mut stats = JitterStats::new();
+    // Running average: track start time and count since streaming activated
+    let mut streaming_start: Option<Instant> = None;
+    let mut streaming_batch_count: u64 = 0;
 
     loop {
         // --- Block until the next frame arrives ---
@@ -506,11 +517,15 @@ fn jitter_buffer_loop(
             &mut interval_estimate,
             &mut consecutive_regular,
             &mut stats,
+            streaming_start,
+            &mut streaming_batch_count,
         );
 
         // --- Decide mode: activate streaming after enough regular batches ---
         if !streaming && consecutive_regular >= STREAMING_THRESHOLD {
             streaming = true;
+            streaming_start = Some(Instant::now());
+            streaming_batch_count = 0;
             tracing::info!(
                 "Jitter buffer activated (interval estimate: {:.1}ms)",
                 interval_estimate.as_secs_f64() * 1000.0
@@ -595,6 +610,8 @@ fn jitter_buffer_loop(
                 if now.duration_since(last_arrival) > Duration::from_secs(5) {
                     streaming = false;
                     consecutive_regular = 0;
+                    streaming_start = None;
+                    streaming_batch_count = 0;
                     while let Some(batch) = buffer.pop_front() {
                         for f in &batch {
                             write_frame(f);
@@ -631,6 +648,8 @@ fn jitter_buffer_loop(
                         &mut interval_estimate,
                         &mut consecutive_regular,
                         &mut stats,
+                        streaming_start,
+                        &mut streaming_batch_count,
                     );
                 }
                 None if disc => {
@@ -659,6 +678,8 @@ fn finalize_batch(
     interval_estimate: &mut Duration,
     consecutive_regular: &mut u32,
     stats: &mut JitterStats,
+    streaming_start: Option<Instant>,
+    streaming_batch_count: &mut u64,
 ) {
     let now = Instant::now();
     let batch = std::mem::take(current_batch);
@@ -671,30 +692,42 @@ fn finalize_batch(
         buffer.len()
     );
 
-    // Update interval estimate from inter-batch timing
+    // Update interval estimate and streaming detection
     if let Some(prev) = *last_batch_arrival {
         let measured = now.duration_since(prev);
         stats.record_arrival_interval(measured);
 
         if measured >= MIN_INTERVAL && measured <= MAX_INTERVAL {
-            let est = interval_estimate.as_secs_f64();
-            let meas = measured.as_secs_f64();
-            let new_est = est * (1.0 - EMA_ALPHA) + meas * EMA_ALPHA;
-            *interval_estimate = Duration::from_secs_f64(new_est);
-
-            // Only count multi-frame batches toward streaming detection —
-            // handshake traffic sends 1-2 frames per batch.
             if batch.len() >= MIN_BATCH_SIZE_FOR_STREAMING {
                 *consecutive_regular += 1;
             } else {
                 *consecutive_regular = 0;
             }
+
+            // Pre-streaming: use EMA for detection phase
+            if streaming_start.is_none() {
+                let est = interval_estimate.as_secs_f64();
+                let meas = measured.as_secs_f64();
+                let new_est = est * (1.0 - EMA_ALPHA) + meas * EMA_ALPHA;
+                *interval_estimate = Duration::from_secs_f64(new_est);
+            }
         } else {
-            // Irregular gap — reset the streak
             *consecutive_regular = 0;
         }
     }
     *last_batch_arrival = Some(now);
+
+    // Once streaming, use running average (total_elapsed / total_batches)
+    // for a rock-solid rate immune to jitter.
+    *streaming_batch_count += 1;
+    if let Some(start) = streaming_start {
+        let elapsed = now.duration_since(start);
+        if *streaming_batch_count > 1 {
+            let avg = elapsed.as_secs_f64() / *streaming_batch_count as f64;
+            let clamped = avg.clamp(MIN_INTERVAL.as_secs_f64(), MAX_INTERVAL.as_secs_f64());
+            *interval_estimate = Duration::from_secs_f64(clamped);
+        }
+    }
 
     // Enforce buffer cap — drop oldest if full
     if buffer.len() >= BUFFER_CAP {
