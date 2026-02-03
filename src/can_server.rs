@@ -520,9 +520,15 @@ async fn handle_connection(
                                                 frame.id(),
                                                 consumed
                                             );
-                                            if can_write_tx.send(frame).await.is_err() {
-                                                tracing::error!("CAN writer thread died");
-                                                break;
+                                            match can_write_tx.try_send(frame) {
+                                                Ok(()) => {}
+                                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                    tracing::trace!("CAN write channel full, dropping frame");
+                                                }
+                                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                    tracing::error!("CAN writer thread died");
+                                                    break;
+                                                }
                                             }
                                             pending.drain(..consumed);
                                         }
