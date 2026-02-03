@@ -261,6 +261,9 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
 /// EMA smoothing factor for interval estimation (weight given to new measurement).
 const EMA_ALPHA: f64 = 0.2;
 
+/// Number of consecutive regular-cadence batches required to activate buffering.
+const STREAMING_THRESHOLD: u32 = 5;
+
 /// Poll `try_recv` until `deadline`, sleeping in short increments between attempts.
 /// Returns `Some(frame)` if a frame arrives, or `None` on timeout / channel closed.
 /// Sets `*disconnected = true` if the channel is closed.
@@ -290,11 +293,74 @@ fn recv_until(
     }
 }
 
+/// Collect frames from the channel into `current_batch`, finalizing completed
+/// batches into `buffer`. Returns `true` if the channel disconnected.
+fn collect_batches(
+    rx: &mut tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    current_batch: &mut Vec<AnyCanFrame>,
+    last_frame_time: &mut Option<Instant>,
+    buffer: &mut VecDeque<Vec<AnyCanFrame>>,
+    last_batch_arrival: &mut Option<Instant>,
+    interval_estimate: &mut Duration,
+    consecutive_regular: &mut u32,
+) -> bool {
+    let mut disconnected = false;
+
+    loop {
+        let deadline = Instant::now() + BATCH_GAP;
+        match recv_until(rx, deadline, &mut disconnected) {
+            Some(frame) => {
+                let now = Instant::now();
+                if let Some(prev) = *last_frame_time {
+                    if now.duration_since(prev) > BATCH_GAP && !current_batch.is_empty() {
+                        finalize_batch(
+                            buffer,
+                            current_batch,
+                            last_batch_arrival,
+                            interval_estimate,
+                            consecutive_regular,
+                        );
+                    }
+                }
+                current_batch.push(frame);
+                *last_frame_time = Some(now);
+            }
+            None if disconnected => {
+                if !current_batch.is_empty() {
+                    finalize_batch(
+                        buffer,
+                        current_batch,
+                        last_batch_arrival,
+                        interval_estimate,
+                        consecutive_regular,
+                    );
+                }
+                return true;
+            }
+            None => {
+                if !current_batch.is_empty() {
+                    finalize_batch(
+                        buffer,
+                        current_batch,
+                        last_batch_arrival,
+                        interval_estimate,
+                        consecutive_regular,
+                    );
+                }
+                return false;
+            }
+        }
+    }
+}
+
 /// Core jitter-buffer loop shared by both FD and non-FD writer paths.
 ///
-/// Collects incoming frames into batches (frames arriving within [`BATCH_GAP`]),
-/// buffers up to [`BUFFER_CAP`] batches, and plays them out at a steady rate
-/// derived from an exponential moving average of inter-batch arrival times.
+/// Starts in **passthrough mode** where frames are written to CAN immediately.
+/// Once [`STREAMING_THRESHOLD`] consecutive batches arrive at a regular cadence
+/// (within [`MIN_INTERVAL`]–[`MAX_INTERVAL`]), switches to **buffered mode**
+/// where batches are held in a ring buffer and played out at a steady measured
+/// rate. Falls back to passthrough when traffic goes idle (no batch for 2×
+/// the estimated interval).
 fn jitter_buffer_loop(
     mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     mut write_frame: impl FnMut(&AnyCanFrame),
@@ -306,113 +372,146 @@ fn jitter_buffer_loop(
     let mut interval_estimate = DEFAULT_INTERVAL;
     let mut last_play_time: Option<Instant> = None;
     let mut last_played_batch: Option<Vec<AnyCanFrame>> = None;
-    let mut disconnected = false;
-
-    // Block on the very first frame so we don't spin before any data arrives.
-    let first = match rx.blocking_recv() {
-        Some(f) => f,
-        None => return, // Channel closed
-    };
-    let now = Instant::now();
-    current_batch.push(first);
-    last_frame_time = Some(now);
+    let mut consecutive_regular: u32 = 0;
+    let mut streaming = false;
 
     loop {
-        // --- Collect phase: drain available frames, grouping into batches ---
-        loop {
-            let deadline = Instant::now() + BATCH_GAP;
-            match recv_until(&mut rx, deadline, &mut disconnected) {
-                Some(frame) => {
-                    let now = Instant::now();
-                    // If there's a gap larger than BATCH_GAP since the last frame,
-                    // finalize the current batch before starting a new one.
-                    if let Some(prev) = last_frame_time {
-                        if now.duration_since(prev) > BATCH_GAP && !current_batch.is_empty() {
-                            finalize_batch(
-                                &mut buffer,
-                                &mut current_batch,
-                                &mut last_batch_arrival,
-                                &mut interval_estimate,
-                            );
-                        }
-                    }
-                    current_batch.push(frame);
-                    last_frame_time = Some(now);
-                }
-                None if disconnected => {
-                    // Channel closed — flush remaining work and exit
-                    if !current_batch.is_empty() {
-                        finalize_batch(
-                            &mut buffer,
-                            &mut current_batch,
-                            &mut last_batch_arrival,
-                            &mut interval_estimate,
-                        );
-                    }
-                    while let Some(batch) = buffer.pop_front() {
-                        for frame in &batch {
-                            write_frame(frame);
-                        }
-                    }
-                    return;
-                }
-                None => {
-                    // Timeout — current batch is complete
-                    if !current_batch.is_empty() {
-                        finalize_batch(
-                            &mut buffer,
-                            &mut current_batch,
-                            &mut last_batch_arrival,
-                            &mut interval_estimate,
-                        );
-                    }
-                    break;
-                }
-            }
+        // --- Block until the next frame arrives ---
+        let frame = match rx.blocking_recv() {
+            Some(f) => f,
+            None => return,
+        };
+        let now = Instant::now();
+        current_batch.push(frame);
+        last_frame_time = Some(now);
+
+        // --- Collect rest of this batch + any further batches ready now ---
+        let disconnected = collect_batches(
+            &mut rx,
+            &mut current_batch,
+            &mut last_frame_time,
+            &mut buffer,
+            &mut last_batch_arrival,
+            &mut interval_estimate,
+            &mut consecutive_regular,
+        );
+
+        // --- Decide mode: activate streaming after enough regular batches ---
+        if !streaming && consecutive_regular >= STREAMING_THRESHOLD {
+            streaming = true;
+            tracing::info!(
+                "Jitter buffer activated (interval estimate: {:.1}ms)",
+                interval_estimate.as_secs_f64() * 1000.0
+            );
         }
 
-        // --- Playback phase: write batches to CAN at the measured interval ---
-        let now = Instant::now();
-        let should_play = match last_play_time {
-            Some(t) => now.duration_since(t) >= interval_estimate,
-            None => !buffer.is_empty(), // Play immediately on first batch
-        };
-
-        if should_play {
-            if let Some(batch) = buffer.pop_front() {
-                for frame in &batch {
-                    write_frame(frame);
+        if !streaming {
+            // Passthrough: write all buffered batches immediately
+            while let Some(batch) = buffer.pop_front() {
+                for f in &batch {
+                    write_frame(f);
                 }
                 last_played_batch = Some(batch);
-                last_play_time = Some(now);
-            } else if let Some(ref batch) = last_played_batch {
-                // Buffer empty (network stall) — repeat last batch to keep motors alive
-                tracing::debug!("Jitter buffer empty, replaying last batch ({} frames)", batch.len());
-                for frame in batch {
-                    write_frame(frame);
-                }
-                last_play_time = Some(now);
             }
+            last_play_time = Some(Instant::now());
+
+            if disconnected {
+                return;
+            }
+            continue;
         }
 
-        // If the buffer is empty, wait for the next frame or playback tick
-        // to avoid busy-waiting.
-        if buffer.is_empty() && current_batch.is_empty() {
+        // --- Streaming / buffered mode ---
+        loop {
+            // Playback: write one batch per interval tick
+            let now = Instant::now();
+            let should_play = match last_play_time {
+                Some(t) => now.duration_since(t) >= interval_estimate,
+                None => !buffer.is_empty(),
+            };
+
+            if should_play {
+                if let Some(batch) = buffer.pop_front() {
+                    for f in &batch {
+                        write_frame(f);
+                    }
+                    last_played_batch = Some(batch);
+                    last_play_time = Some(now);
+                } else if let Some(ref batch) = last_played_batch {
+                    tracing::debug!(
+                        "Jitter buffer empty, replaying last batch ({} frames)",
+                        batch.len()
+                    );
+                    for f in batch {
+                        write_frame(f);
+                    }
+                    last_play_time = Some(now);
+                }
+            }
+
+            // Check for idle: if no batch for 2× the interval, drop back to passthrough
+            if let Some(last_arrival) = last_batch_arrival {
+                if now.duration_since(last_arrival) > interval_estimate * 2 {
+                    streaming = false;
+                    consecutive_regular = 0;
+                    // Flush remaining buffer
+                    while let Some(batch) = buffer.pop_front() {
+                        for f in &batch {
+                            write_frame(f);
+                        }
+                    }
+                    last_played_batch = None;
+                    last_play_time = None;
+                    tracing::info!("Jitter buffer deactivated (idle)");
+                    break; // Back to outer loop (passthrough / blocking recv)
+                }
+            }
+
+            if disconnected {
+                // Flush remaining
+                while let Some(batch) = buffer.pop_front() {
+                    for f in &batch {
+                        write_frame(f);
+                    }
+                }
+                return;
+            }
+
+            // Wait for more data or next playback tick
             let wait = match last_play_time {
                 Some(t) => interval_estimate.saturating_sub(now.duration_since(t)),
                 None => interval_estimate,
             };
             let wait = wait.max(Duration::from_micros(100));
             let deadline = Instant::now() + wait;
+            let mut disc = false;
 
-            match recv_until(&mut rx, deadline, &mut disconnected) {
+            match recv_until(&mut rx, deadline, &mut disc) {
                 Some(frame) => {
                     current_batch.push(frame);
                     last_frame_time = Some(Instant::now());
+
+                    // Collect the rest of this batch
+                    let _ = collect_batches(
+                        &mut rx,
+                        &mut current_batch,
+                        &mut last_frame_time,
+                        &mut buffer,
+                        &mut last_batch_arrival,
+                        &mut interval_estimate,
+                        &mut consecutive_regular,
+                    );
                 }
-                None if disconnected => return,
+                None if disc => {
+                    while let Some(batch) = buffer.pop_front() {
+                        for f in &batch {
+                            write_frame(f);
+                        }
+                    }
+                    return;
+                }
                 None => {
-                    // Timeout — loop back to check playback
+                    // Timeout — loop back to check playback tick
                 }
             }
         }
@@ -420,12 +519,13 @@ fn jitter_buffer_loop(
 }
 
 /// Finalize the current batch: push it into the buffer, update interval estimate,
-/// and enforce the buffer capacity.
+/// track consecutive regular arrivals, and enforce the buffer capacity.
 fn finalize_batch(
     buffer: &mut VecDeque<Vec<AnyCanFrame>>,
     current_batch: &mut Vec<AnyCanFrame>,
     last_batch_arrival: &mut Option<Instant>,
     interval_estimate: &mut Duration,
+    consecutive_regular: &mut u32,
 ) {
     let now = Instant::now();
     let batch = std::mem::take(current_batch);
@@ -439,12 +539,15 @@ fn finalize_batch(
     // Update interval estimate from inter-batch timing
     if let Some(prev) = *last_batch_arrival {
         let measured = now.duration_since(prev);
-        // Only update if within reasonable range
         if measured >= MIN_INTERVAL && measured <= MAX_INTERVAL {
             let est = interval_estimate.as_secs_f64();
             let meas = measured.as_secs_f64();
             let new_est = est * (1.0 - EMA_ALPHA) + meas * EMA_ALPHA;
             *interval_estimate = Duration::from_secs_f64(new_est);
+            *consecutive_regular += 1;
+        } else {
+            // Irregular gap — reset the streak
+            *consecutive_regular = 0;
         }
     }
     *last_batch_arrival = Some(now);
@@ -452,7 +555,10 @@ fn finalize_batch(
     // Enforce buffer cap — drop oldest if full
     if buffer.len() >= BUFFER_CAP {
         let dropped = buffer.pop_front().unwrap();
-        tracing::debug!("Jitter buffer full, dropping oldest batch ({} frames)", dropped.len());
+        tracing::debug!(
+            "Jitter buffer full, dropping oldest batch ({} frames)",
+            dropped.len()
+        );
     }
 
     buffer.push_back(batch);
