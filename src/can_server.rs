@@ -249,8 +249,7 @@ fn can_writer_thread(
 const BATCH_GAP: Duration = Duration::from_millis(10);
 
 /// Maximum batches held in the jitter buffer.
-/// At 30Hz (~33ms/cycle), 3 cycles ≈ 100ms max latency.
-const BUFFER_CAP: usize = 3;
+const BUFFER_CAP: usize = 5;
 
 /// Minimum playback interval clamp.
 const MIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -264,9 +263,9 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
 /// EMA smoothing factor for interval estimation (weight given to new measurement).
 const EMA_ALPHA: f64 = 0.2;
 
-/// When the buffer depth exceeds this, play immediately (skip the interval wait)
-/// to drain the backlog and avoid drops.
-const BUFFER_CATCHUP_THRESHOLD: usize = 1;
+/// Buffer depth at which playback starts speeding up to drain the backlog.
+/// Above this, playback interval is progressively shortened.
+const BUFFER_CATCHUP_THRESHOLD: usize = 2;
 
 /// Delay between individual CAN frame writes within a batch, to avoid
 /// overflowing the kernel CAN socket buffer (ENOBUFS / os error 105).
@@ -580,17 +579,20 @@ fn jitter_buffer_loop(
                 stats.max_buffer_depth = buffer.len();
             }
 
-            // Playback: write one batch per interval tick, or immediately if
-            // the buffer is building up (catch-up mode).
+            // Playback: write one batch per interval tick. When buffer is
+            // building up, shorten the interval to drain it smoothly.
             let now = Instant::now();
-            let catching_up = buffer.len() > BUFFER_CATCHUP_THRESHOLD;
-            let should_play = if catching_up {
-                !buffer.is_empty()
+            let effective_interval = if buffer.len() > BUFFER_CATCHUP_THRESHOLD {
+                // Scale down: depth 3→75%, 4→50%, 5→25% of interval
+                let excess = buffer.len() - BUFFER_CATCHUP_THRESHOLD;
+                let scale = 1.0 / (1.0 + excess as f64);
+                Duration::from_secs_f64(interval_estimate.as_secs_f64() * scale)
             } else {
-                match last_play_time {
-                    Some(t) => now.duration_since(t) >= interval_estimate,
-                    None => !buffer.is_empty(),
-                }
+                interval_estimate
+            };
+            let should_play = match last_play_time {
+                Some(t) => now.duration_since(t) >= effective_interval,
+                None => !buffer.is_empty(),
             };
 
             if should_play {
