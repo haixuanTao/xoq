@@ -278,38 +278,10 @@ const STREAMING_THRESHOLD: u32 = 15;
 /// Handshake sends 1-2 frames at a time; a real control cycle sends all motors.
 const MIN_BATCH_SIZE_FOR_STREAMING: usize = 3;
 
-/// Poll `try_recv` until `deadline`, sleeping in short increments between attempts.
-/// Returns `Some(frame)` if a frame arrives, or `None` on timeout / channel closed.
-/// Sets `*disconnected = true` if the channel is closed.
-fn recv_until(
-    rx: &mut tokio::sync::mpsc::Receiver<AnyCanFrame>,
-    deadline: Instant,
-    disconnected: &mut bool,
-) -> Option<AnyCanFrame> {
-    const POLL_SLEEP: Duration = Duration::from_micros(100);
-
-    loop {
-        match rx.try_recv() {
-            Ok(frame) => return Some(frame),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                *disconnected = true;
-                return None;
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return None;
-                }
-                let remaining = deadline - now;
-                std::thread::sleep(remaining.min(POLL_SLEEP));
-            }
-        }
-    }
-}
-
-/// Collect frames from the channel into `current_batch`, finalizing completed
-/// batches into `buffer`. Returns `true` if the channel disconnected.
-fn collect_batches(
+/// Drain all immediately available frames from the channel into `current_batch`,
+/// finalizing completed batches into `buffer`. No sleeping — just grabs what's
+/// ready and returns. Returns `true` if the channel is disconnected.
+fn drain_into_batches(
     rx: &mut tokio::sync::mpsc::Receiver<AnyCanFrame>,
     current_batch: &mut Vec<AnyCanFrame>,
     last_frame_time: &mut Option<Instant>,
@@ -321,13 +293,11 @@ fn collect_batches(
     streaming_start: Option<Instant>,
     streaming_batch_count: &mut u64,
 ) -> bool {
-    let mut disconnected = false;
-
     loop {
-        let deadline = Instant::now() + BATCH_GAP;
-        match recv_until(rx, deadline, &mut disconnected) {
-            Some(frame) => {
+        match rx.try_recv() {
+            Ok(frame) => {
                 let now = Instant::now();
+                // If gap since last frame > BATCH_GAP, finalize current batch
                 if let Some(prev) = *last_frame_time {
                     if now.duration_since(prev) > BATCH_GAP && !current_batch.is_empty() {
                         finalize_batch(
@@ -345,7 +315,7 @@ fn collect_batches(
                 current_batch.push(frame);
                 *last_frame_time = Some(now);
             }
-            None if disconnected => {
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                 if !current_batch.is_empty() {
                     finalize_batch(
                         buffer,
@@ -360,19 +330,8 @@ fn collect_batches(
                 }
                 return true;
             }
-            None => {
-                if !current_batch.is_empty() {
-                    finalize_batch(
-                        buffer,
-                        current_batch,
-                        last_batch_arrival,
-                        interval_estimate,
-                        consecutive_regular,
-                        stats,
-                        streaming_start,
-                        streaming_batch_count,
-                    );
-                }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                // Nothing available right now — done draining
                 return false;
             }
         }
@@ -561,7 +520,7 @@ fn jitter_buffer_loop(
         last_frame_time = Some(now);
 
         // --- Collect rest of this batch + any further batches ready now ---
-        let disconnected = collect_batches(
+        let disconnected = drain_into_batches(
             &mut rx,
             &mut current_batch,
             &mut last_frame_time,
@@ -679,46 +638,52 @@ fn jitter_buffer_loop(
                 }
             }
 
-            // Wait for more data or next playback tick
+            // Sleep until next playback tick, then drain any new data
             let wait = match last_play_time {
-                Some(t) => interval_estimate.saturating_sub(now.duration_since(t)),
-                None => interval_estimate,
+                Some(t) => effective_interval.saturating_sub(now.duration_since(t)),
+                None => effective_interval,
             };
-            let wait = wait.max(Duration::from_micros(100));
-            let deadline = Instant::now() + wait;
-            let mut disc = false;
+            if wait > Duration::from_millis(1) {
+                std::thread::sleep(wait - Duration::from_millis(1));
+            }
 
-            match recv_until(&mut rx, deadline, &mut disc) {
-                Some(frame) => {
-                    current_batch.push(frame);
-                    last_frame_time = Some(Instant::now());
-
-                    // Collect the rest of this batch
-                    let _ = collect_batches(
-                        &mut rx,
-                        &mut current_batch,
-                        &mut last_frame_time,
-                        &mut buffer,
-                        &mut last_batch_arrival,
-                        &mut interval_estimate,
-                        &mut consecutive_regular,
-                        &mut stats,
-                        streaming_start,
-                        &mut streaming_batch_count,
-                    );
-                }
-                None if disc => {
-                    while let Some(batch) = buffer.pop_front() {
-                        for f in &batch {
-                            write_frame(f);
-                        }
+            // Drain everything available
+            let disc = drain_into_batches(
+                &mut rx,
+                &mut current_batch,
+                &mut last_frame_time,
+                &mut buffer,
+                &mut last_batch_arrival,
+                &mut interval_estimate,
+                &mut consecutive_regular,
+                &mut stats,
+                streaming_start,
+                &mut streaming_batch_count,
+            );
+            // Finalize any partial batch that's been sitting longer than BATCH_GAP
+            if !current_batch.is_empty() {
+                if let Some(prev) = last_frame_time {
+                    if Instant::now().duration_since(prev) > BATCH_GAP {
+                        finalize_batch(
+                            &mut buffer,
+                            &mut current_batch,
+                            &mut last_batch_arrival,
+                            &mut interval_estimate,
+                            &mut consecutive_regular,
+                            &mut stats,
+                            streaming_start,
+                            &mut streaming_batch_count,
+                        );
                     }
-    
-                    return;
                 }
-                None => {
-                    // Timeout — loop back to check playback tick
+            }
+            if disc {
+                while let Some(batch) = buffer.pop_front() {
+                    for f in &batch {
+                        write_frame(f);
+                    }
                 }
+                return;
             }
         }
     }
