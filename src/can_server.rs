@@ -192,42 +192,26 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        let mut latest: std::collections::BTreeMap<u32, AnyCanFrame> = std::collections::BTreeMap::new();
-        loop {
-            let frame = match rx.recv() {
-                Ok(f) => f,
-                Err(_) => break,
+        while let Ok(frame) = rx.recv() {
+            let result = match &frame {
+                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Err(e) => {
+                        tracing::warn!("CAN frame conversion error on write: {}", e);
+                        continue;
+                    }
+                },
+                AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
+                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Err(e) => {
+                        tracing::warn!("CAN FD frame conversion error on write: {}", e);
+                        continue;
+                    }
+                },
             };
-            latest.insert(frame.id(), frame);
-
-            // Drain all pending, keep only latest per CAN ID
-            while let Ok(frame) = rx.try_recv() {
-                latest.insert(frame.id(), frame);
+            if let Err(e) = result {
+                tracing::warn!("CAN write error (dropping frame): {}", e);
             }
-
-            // Write latest frame for each motor (deterministic order by CAN ID)
-            for (_, frame) in latest.iter() {
-                let result = match frame {
-                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                        Err(e) => {
-                            tracing::warn!("CAN frame conversion error on write: {}", e);
-                            continue;
-                        }
-                    },
-                    AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
-                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                        Err(e) => {
-                            tracing::warn!("CAN FD frame conversion error on write: {}", e);
-                            continue;
-                        }
-                    },
-                };
-                if let Err(e) = result {
-                    tracing::warn!("CAN write error (dropping frame): {}", e);
-                }
-            }
-            latest.clear();
         }
     } else {
         let socket = match socketcan::CanSocket::open(&interface) {
@@ -243,39 +227,23 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        let mut latest: std::collections::BTreeMap<u32, AnyCanFrame> = std::collections::BTreeMap::new();
-        loop {
-            let frame = match rx.recv() {
-                Ok(f) => f,
-                Err(_) => break,
-            };
-            latest.insert(frame.id(), frame);
-
-            // Drain all pending, keep only latest per CAN ID
-            while let Ok(frame) = rx.try_recv() {
-                latest.insert(frame.id(), frame);
-            }
-
-            // Write latest frame for each motor (deterministic order by CAN ID)
-            for (_, frame) in latest.iter() {
-                let result = match frame {
-                    AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
-                        Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
-                        Err(e) => {
-                            tracing::warn!("CAN frame conversion error on write: {}", e);
-                            continue;
-                        }
-                    },
-                    AnyCanFrame::CanFd(_) => {
-                        tracing::warn!("CAN FD frame on standard CAN socket, dropping");
+        while let Ok(frame) = rx.recv() {
+            let result = match &frame {
+                AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
+                    Ok(sf) => write_with_retry(|| socket.write_frame(&sf)),
+                    Err(e) => {
+                        tracing::warn!("CAN frame conversion error on write: {}", e);
                         continue;
                     }
-                };
-                if let Err(e) = result {
-                    tracing::warn!("CAN write error (dropping frame): {}", e);
+                },
+                AnyCanFrame::CanFd(_) => {
+                    tracing::warn!("CAN FD frame on standard CAN socket, dropping");
+                    continue;
                 }
+            };
+            if let Err(e) = result {
+                tracing::warn!("CAN write error (dropping frame): {}", e);
             }
-            latest.clear();
         }
     }
 }
