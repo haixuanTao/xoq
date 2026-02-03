@@ -22,7 +22,7 @@ use crate::iroh::{IrohConnection, IrohServerBuilder};
 pub struct CanServer {
     server_id: String,
     /// Sender for frames to write to CAN interface (std channel — writer thread blocks on recv).
-    can_write_tx: std::sync::mpsc::Sender<AnyCanFrame>,
+    can_write_tx: std::sync::mpsc::SyncSender<AnyCanFrame>,
     /// Receiver for frames read from CAN interface.
     /// Wrapped in `Mutex<Option<>>` so ownership can be transferred to/from connection tasks.
     /// The Mutex is held only for a quick `take()`/`replace()` swap, never across awaits.
@@ -425,7 +425,7 @@ impl CanServer {
 async fn handle_connection(
     conn: IrohConnection,
     mut can_read_rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
-    can_write_tx: std::sync::mpsc::Sender<AnyCanFrame>,
+    can_write_tx: std::sync::mpsc::SyncSender<AnyCanFrame>,
     cancel: CancellationToken,
 ) -> (Result<()>, tokio::sync::mpsc::Receiver<AnyCanFrame>) {
     let stream = match conn.accept_stream().await {
