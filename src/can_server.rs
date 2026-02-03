@@ -471,6 +471,12 @@ impl JitterStats {
     }
 }
 
+impl Drop for JitterStats {
+    fn drop(&mut self) {
+        self.print_summary();
+    }
+}
+
 /// Core jitter-buffer loop shared by both FD and non-FD writer paths.
 ///
 /// Starts in **passthrough mode** where frames are written to CAN immediately.
@@ -502,7 +508,7 @@ fn jitter_buffer_loop(
         let frame = match rx.blocking_recv() {
             Some(f) => f,
             None => {
-                stats.print_summary();
+
                 return;
             }
         };
@@ -529,7 +535,7 @@ fn jitter_buffer_loop(
             streaming = true;
             streaming_start = Some(Instant::now());
             streaming_batch_count = 0;
-            tracing::info!(
+            tracing::warn!(
                 "Jitter buffer activated (interval estimate: {:.1}ms)",
                 interval_estimate.as_secs_f64() * 1000.0
             );
@@ -546,7 +552,7 @@ fn jitter_buffer_loop(
             last_play_time = Some(Instant::now());
 
             if disconnected {
-                stats.print_summary();
+
                 return;
             }
             continue;
@@ -604,7 +610,7 @@ fn jitter_buffer_loop(
                         write_frame(f);
                     }
                 }
-                stats.print_summary();
+
                 return;
             }
 
@@ -622,7 +628,7 @@ fn jitter_buffer_loop(
                     }
                     last_played_batch = None;
                     last_play_time = None;
-                    tracing::info!("Jitter buffer deactivated (5s idle)");
+                    tracing::warn!("Jitter buffer deactivated (5s idle)");
                     break;
                 }
             }
@@ -661,7 +667,7 @@ fn jitter_buffer_loop(
                             write_frame(f);
                         }
                     }
-                    stats.print_summary();
+    
                     return;
                 }
                 None => {
