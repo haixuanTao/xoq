@@ -246,8 +246,8 @@ fn can_writer_thread(
 /// Batch gap: frames arriving within this window are grouped into one batch.
 const BATCH_GAP: Duration = Duration::from_millis(2);
 
-/// Maximum batches held in the jitter buffer.
-const BUFFER_CAP: usize = 200;
+/// Maximum batches held in the jitter buffer (~330ms at 30Hz).
+const BUFFER_CAP: usize = 10;
 
 /// Minimum playback interval clamp.
 const MIN_INTERVAL: Duration = Duration::from_millis(10);
