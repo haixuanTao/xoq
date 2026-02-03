@@ -9,8 +9,9 @@
 
 use anyhow::Result;
 use socketcan::Socket;
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
@@ -144,11 +145,17 @@ fn can_reader_thread(
     }
 }
 
-/// Writer thread: receives frames from a std mpsc channel and writes them to socketcan.
+/// Writer thread: receives frames from a tokio mpsc channel, buffers them into
+/// batches, and plays them out to CAN at a steady measured rate (jitter buffer).
+///
+/// Frames arriving within 2ms of each other are grouped as one batch (one control
+/// cycle). The playback interval is estimated via exponential moving average of
+/// inter-batch arrival times. Two batches are buffered so that short network
+/// hiccups are absorbed without stalling the motors.
 fn can_writer_thread(
     interface: String,
     enable_fd: bool,
-    mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     init_tx: std::sync::mpsc::SyncSender<Result<()>>,
 ) {
     if enable_fd {
@@ -165,27 +172,27 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        while let Some(frame) = rx.blocking_recv() {
-            let result = match &frame {
+        jitter_buffer_loop(rx, |frame| {
+            let result = match frame {
                 AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
                     Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN frame conversion error on write: {}", e);
-                        continue;
+                        return;
                     }
                 },
                 AnyCanFrame::CanFd(f) => match socketcan::CanFdFrame::try_from(f) {
                     Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN FD frame conversion error on write: {}", e);
-                        continue;
+                        return;
                     }
                 },
             };
             if let Err(e) = result {
                 tracing::warn!("CAN write error (dropping frame): {}", e);
             }
-        }
+        });
     } else {
         let socket = match socketcan::CanSocket::open(&interface) {
             Ok(s) => s,
@@ -200,25 +207,240 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
-        while let Some(frame) = rx.blocking_recv() {
-            let result = match &frame {
+        jitter_buffer_loop(rx, |frame| {
+            let result = match frame {
                 AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
                     Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                     Err(e) => {
                         tracing::warn!("CAN frame conversion error on write: {}", e);
-                        continue;
+                        return;
                     }
                 },
                 AnyCanFrame::CanFd(_) => {
                     tracing::warn!("CAN FD frame on standard CAN socket, dropping");
-                    continue;
+                    return;
                 }
             };
             if let Err(e) = result {
                 tracing::warn!("CAN write error (dropping frame): {}", e);
             }
+        });
+    }
+}
+
+/// Batch gap: frames arriving within this window are grouped into one batch.
+const BATCH_GAP: Duration = Duration::from_millis(2);
+
+/// Maximum batches held in the jitter buffer.
+const BUFFER_CAP: usize = 3;
+
+/// Minimum playback interval clamp.
+const MIN_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Maximum playback interval clamp.
+const MAX_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Default playback interval (~30 Hz) used until we have measurements.
+const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
+
+/// EMA smoothing factor for interval estimation (weight given to new measurement).
+const EMA_ALPHA: f64 = 0.2;
+
+/// Poll `try_recv` until `deadline`, sleeping in short increments between attempts.
+/// Returns `Some(frame)` if a frame arrives, or `None` on timeout / channel closed.
+/// Sets `*disconnected = true` if the channel is closed.
+fn recv_until(
+    rx: &mut tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    deadline: Instant,
+    disconnected: &mut bool,
+) -> Option<AnyCanFrame> {
+    const POLL_SLEEP: Duration = Duration::from_micros(100);
+
+    loop {
+        match rx.try_recv() {
+            Ok(frame) => return Some(frame),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                *disconnected = true;
+                return None;
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                let remaining = deadline - now;
+                std::thread::sleep(remaining.min(POLL_SLEEP));
+            }
         }
     }
+}
+
+/// Core jitter-buffer loop shared by both FD and non-FD writer paths.
+///
+/// Collects incoming frames into batches (frames arriving within [`BATCH_GAP`]),
+/// buffers up to [`BUFFER_CAP`] batches, and plays them out at a steady rate
+/// derived from an exponential moving average of inter-batch arrival times.
+fn jitter_buffer_loop(
+    mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    mut write_frame: impl FnMut(&AnyCanFrame),
+) {
+    let mut buffer: VecDeque<Vec<AnyCanFrame>> = VecDeque::new();
+    let mut current_batch: Vec<AnyCanFrame> = Vec::new();
+    let mut last_frame_time: Option<Instant> = None;
+    let mut last_batch_arrival: Option<Instant> = None;
+    let mut interval_estimate = DEFAULT_INTERVAL;
+    let mut last_play_time: Option<Instant> = None;
+    let mut last_played_batch: Option<Vec<AnyCanFrame>> = None;
+    let mut disconnected = false;
+
+    // Block on the very first frame so we don't spin before any data arrives.
+    let first = match rx.blocking_recv() {
+        Some(f) => f,
+        None => return, // Channel closed
+    };
+    let now = Instant::now();
+    current_batch.push(first);
+    last_frame_time = Some(now);
+
+    loop {
+        // --- Collect phase: drain available frames, grouping into batches ---
+        loop {
+            let deadline = Instant::now() + BATCH_GAP;
+            match recv_until(&mut rx, deadline, &mut disconnected) {
+                Some(frame) => {
+                    let now = Instant::now();
+                    // If there's a gap larger than BATCH_GAP since the last frame,
+                    // finalize the current batch before starting a new one.
+                    if let Some(prev) = last_frame_time {
+                        if now.duration_since(prev) > BATCH_GAP && !current_batch.is_empty() {
+                            finalize_batch(
+                                &mut buffer,
+                                &mut current_batch,
+                                &mut last_batch_arrival,
+                                &mut interval_estimate,
+                            );
+                        }
+                    }
+                    current_batch.push(frame);
+                    last_frame_time = Some(now);
+                }
+                None if disconnected => {
+                    // Channel closed — flush remaining work and exit
+                    if !current_batch.is_empty() {
+                        finalize_batch(
+                            &mut buffer,
+                            &mut current_batch,
+                            &mut last_batch_arrival,
+                            &mut interval_estimate,
+                        );
+                    }
+                    while let Some(batch) = buffer.pop_front() {
+                        for frame in &batch {
+                            write_frame(frame);
+                        }
+                    }
+                    return;
+                }
+                None => {
+                    // Timeout — current batch is complete
+                    if !current_batch.is_empty() {
+                        finalize_batch(
+                            &mut buffer,
+                            &mut current_batch,
+                            &mut last_batch_arrival,
+                            &mut interval_estimate,
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        // --- Playback phase: write batches to CAN at the measured interval ---
+        let now = Instant::now();
+        let should_play = match last_play_time {
+            Some(t) => now.duration_since(t) >= interval_estimate,
+            None => !buffer.is_empty(), // Play immediately on first batch
+        };
+
+        if should_play {
+            if let Some(batch) = buffer.pop_front() {
+                for frame in &batch {
+                    write_frame(frame);
+                }
+                last_played_batch = Some(batch);
+                last_play_time = Some(now);
+            } else if let Some(ref batch) = last_played_batch {
+                // Buffer empty (network stall) — repeat last batch to keep motors alive
+                tracing::debug!("Jitter buffer empty, replaying last batch ({} frames)", batch.len());
+                for frame in batch {
+                    write_frame(frame);
+                }
+                last_play_time = Some(now);
+            }
+        }
+
+        // If the buffer is empty, wait for the next frame or playback tick
+        // to avoid busy-waiting.
+        if buffer.is_empty() && current_batch.is_empty() {
+            let wait = match last_play_time {
+                Some(t) => interval_estimate.saturating_sub(now.duration_since(t)),
+                None => interval_estimate,
+            };
+            let wait = wait.max(Duration::from_micros(100));
+            let deadline = Instant::now() + wait;
+
+            match recv_until(&mut rx, deadline, &mut disconnected) {
+                Some(frame) => {
+                    current_batch.push(frame);
+                    last_frame_time = Some(Instant::now());
+                }
+                None if disconnected => return,
+                None => {
+                    // Timeout — loop back to check playback
+                }
+            }
+        }
+    }
+}
+
+/// Finalize the current batch: push it into the buffer, update interval estimate,
+/// and enforce the buffer capacity.
+fn finalize_batch(
+    buffer: &mut VecDeque<Vec<AnyCanFrame>>,
+    current_batch: &mut Vec<AnyCanFrame>,
+    last_batch_arrival: &mut Option<Instant>,
+    interval_estimate: &mut Duration,
+) {
+    let now = Instant::now();
+    let batch = std::mem::take(current_batch);
+
+    tracing::debug!(
+        "Batch complete: {} frames, buffer depth: {}",
+        batch.len(),
+        buffer.len()
+    );
+
+    // Update interval estimate from inter-batch timing
+    if let Some(prev) = *last_batch_arrival {
+        let measured = now.duration_since(prev);
+        // Only update if within reasonable range
+        if measured >= MIN_INTERVAL && measured <= MAX_INTERVAL {
+            let est = interval_estimate.as_secs_f64();
+            let meas = measured.as_secs_f64();
+            let new_est = est * (1.0 - EMA_ALPHA) + meas * EMA_ALPHA;
+            *interval_estimate = Duration::from_secs_f64(new_est);
+        }
+    }
+    *last_batch_arrival = Some(now);
+
+    // Enforce buffer cap — drop oldest if full
+    if buffer.len() >= BUFFER_CAP {
+        let dropped = buffer.pop_front().unwrap();
+        tracing::debug!("Jitter buffer full, dropping oldest batch ({} frames)", dropped.len());
+    }
+
+    buffer.push_back(batch);
 }
 
 impl CanServer {
