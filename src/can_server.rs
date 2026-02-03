@@ -247,7 +247,7 @@ fn can_writer_thread(
 const BATCH_GAP: Duration = Duration::from_millis(2);
 
 /// Maximum batches held in the jitter buffer.
-const BUFFER_CAP: usize = 3;
+const BUFFER_CAP: usize = 10;
 
 /// Minimum playback interval clamp.
 const MIN_INTERVAL: Duration = Duration::from_millis(10);
@@ -261,8 +261,12 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(33);
 /// EMA smoothing factor for interval estimation (weight given to new measurement).
 const EMA_ALPHA: f64 = 0.2;
 
-/// Number of consecutive regular-cadence batches required to activate buffering.
-const STREAMING_THRESHOLD: u32 = 5;
+/// Number of consecutive regular-cadence multi-frame batches required to activate buffering.
+const STREAMING_THRESHOLD: u32 = 15;
+
+/// Minimum frames in a batch for it to count toward streaming detection.
+/// Handshake sends 1-2 frames at a time; a real control cycle sends all motors.
+const MIN_BATCH_SIZE_FOR_STREAMING: usize = 3;
 
 /// Poll `try_recv` until `deadline`, sleeping in short increments between attempts.
 /// Returns `Some(frame)` if a frame arrives, or `None` on timeout / channel closed.
@@ -544,7 +548,14 @@ fn finalize_batch(
             let meas = measured.as_secs_f64();
             let new_est = est * (1.0 - EMA_ALPHA) + meas * EMA_ALPHA;
             *interval_estimate = Duration::from_secs_f64(new_est);
-            *consecutive_regular += 1;
+
+            // Only count multi-frame batches toward streaming detection —
+            // handshake traffic sends 1-2 frames per batch.
+            if batch.len() >= MIN_BATCH_SIZE_FOR_STREAMING {
+                *consecutive_regular += 1;
+            } else {
+                *consecutive_regular = 0;
+            }
         } else {
             // Irregular gap — reset the streak
             *consecutive_regular = 0;
