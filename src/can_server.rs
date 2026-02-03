@@ -269,7 +269,7 @@ const BUFFER_CATCHUP_THRESHOLD: usize = 2;
 
 /// Delay between individual CAN frame writes within a batch, to avoid
 /// overflowing the kernel CAN socket buffer (ENOBUFS / os error 105).
-const INTER_FRAME_DELAY: Duration = Duration::from_micros(200);
+const INTER_FRAME_DELAY: Duration = Duration::from_micros(500);
 
 /// Number of consecutive regular-cadence multi-frame batches required to activate buffering.
 const STREAMING_THRESHOLD: u32 = 15;
@@ -505,6 +505,7 @@ fn jitter_buffer_loop(
     // Running average: track start time and count since streaming activated
     let mut streaming_start: Option<Instant> = None;
     let mut streaming_batch_count: u64 = 0;
+    let mut last_stats_time = Instant::now();
 
     loop {
         // --- Block until the next frame arrives ---
@@ -530,26 +531,17 @@ fn jitter_buffer_loop(
             &mut streaming_batch_count,
         );
 
-        // Wait BATCH_GAP for more frames, then finalize any partial batch
-        if !current_batch.is_empty() && !disconnected {
-            std::thread::sleep(BATCH_GAP);
-            disconnected = drain_into_batches(
-                &mut rx,
-                &mut current_batch,
-                &mut last_frame_time,
-                &mut buffer,
-                &mut last_batch_arrival,
-                &mut interval_estimate,
-                &mut consecutive_regular,
-                &mut stats,
-                streaming_start,
-                &mut streaming_batch_count,
-            );
-            // Finalize whatever is left
-            if !current_batch.is_empty() {
-                finalize_batch(
-                    &mut buffer,
+        // In streaming mode, wait BATCH_GAP for remaining control cycle frames.
+        // Motor frames (8 per cycle) may arrive slightly spread across a few ms.
+        // In passthrough mode, finalize immediately for low-latency handshake.
+        if !current_batch.is_empty() {
+            if streaming && !disconnected {
+                std::thread::sleep(BATCH_GAP);
+                let disc = drain_into_batches(
+                    &mut rx,
                     &mut current_batch,
+                    &mut last_frame_time,
+                    &mut buffer,
                     &mut last_batch_arrival,
                     &mut interval_estimate,
                     &mut consecutive_regular,
@@ -557,7 +549,20 @@ fn jitter_buffer_loop(
                     streaming_start,
                     &mut streaming_batch_count,
                 );
+                if disc {
+                    disconnected = true;
+                }
             }
+            finalize_batch(
+                &mut buffer,
+                &mut current_batch,
+                &mut last_batch_arrival,
+                &mut interval_estimate,
+                &mut consecutive_regular,
+                &mut stats,
+                streaming_start,
+                &mut streaming_batch_count,
+            );
         }
 
         // --- Decide mode: activate streaming after enough regular batches ---
@@ -641,6 +646,12 @@ fn jitter_buffer_loop(
                 }
 
                 return;
+            }
+
+            // Periodic stats log (every 30s)
+            if now.duration_since(last_stats_time) > Duration::from_secs(30) {
+                stats.print_summary();
+                last_stats_time = now;
             }
 
             // Deactivate after 5s idle (client likely disconnected or stopped)

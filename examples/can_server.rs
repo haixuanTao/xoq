@@ -208,6 +208,8 @@ async fn main() -> Result<()> {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down all servers...");
             servers.abort_all();
+            // Give writer threads time to notice channel closure and print final stats
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
         _ = async {
             while servers.join_next().await.is_some() {}
