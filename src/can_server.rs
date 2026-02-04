@@ -6,7 +6,7 @@
 use anyhow::Result;
 use socketcan::Socket;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
@@ -27,9 +27,21 @@ fn can_reader_thread_fd(
     socket: Arc<socketcan::CanFdSocket>,
     tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
 ) {
+    let mut last_read = Instant::now();
+    let mut timeouts: u32 = 0;
     loop {
         match socket.read_frame() {
             Ok(frame) => {
+                let gap = last_read.elapsed();
+                if gap > Duration::from_millis(50) {
+                    tracing::warn!(
+                        "CAN read gap: {:.1}ms ({} timeouts)",
+                        gap.as_secs_f64() * 1000.0,
+                        timeouts,
+                    );
+                }
+                last_read = Instant::now();
+                timeouts = 0;
                 let any_frame = match frame {
                     socketcan::CanAnyFrame::Normal(f) => match CanFrame::try_from(f) {
                         Ok(cf) => AnyCanFrame::Can(cf),
@@ -57,6 +69,7 @@ fn can_reader_thread_fd(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
+                timeouts += 1;
                 continue;
             }
             Err(e) => {
@@ -72,9 +85,21 @@ fn can_reader_thread_std(
     socket: Arc<socketcan::CanSocket>,
     tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
 ) {
+    let mut last_read = Instant::now();
+    let mut timeouts: u32 = 0;
     loop {
         match socket.read_frame() {
             Ok(frame) => {
+                let gap = last_read.elapsed();
+                if gap > Duration::from_millis(50) {
+                    tracing::warn!(
+                        "CAN read gap: {:.1}ms ({} timeouts)",
+                        gap.as_secs_f64() * 1000.0,
+                        timeouts,
+                    );
+                }
+                last_read = Instant::now();
+                timeouts = 0;
                 let any_frame = match CanFrame::try_from(frame) {
                     Ok(cf) => AnyCanFrame::Can(cf),
                     Err(e) => {
@@ -90,6 +115,7 @@ fn can_reader_thread_std(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
+                timeouts += 1;
                 continue;
             }
             Err(e) => {
