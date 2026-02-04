@@ -1,6 +1,7 @@
 //! Serial server - bridges local serial port to remote clients over iroh P2P.
 
 use anyhow::Result;
+use iroh::Watcher;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -150,6 +151,14 @@ impl Server {
     }
 
     async fn handle_connection(&self, conn: IrohConnection) -> Result<()> {
+        // Log connection type (direct vs relay)
+        if let Some(mut watcher) = self.endpoint.endpoint().conn_type(conn.remote_id().into()) {
+            let conn_type = watcher.get();
+            tracing::warn!("Connection type: {:?}", conn_type);
+        } else {
+            tracing::warn!("Connection type: UNKNOWN (no watcher)");
+        }
+
         tracing::debug!("Waiting for client to open stream...");
         let stream = conn
             .accept_stream()
