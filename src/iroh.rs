@@ -100,7 +100,7 @@ impl IrohServerBuilder {
             .await?;
 
         tracing::info!("Iroh server: relay DISABLED, low-latency transport config active");
-        endpoint.online().await;
+        // Don't call endpoint.online() — it waits for home relay which won't exist
 
         Ok(IrohServer { endpoint })
     }
