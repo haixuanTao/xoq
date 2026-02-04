@@ -2,14 +2,10 @@
 
 Remote hardware access for robotics over the internet.
 
-- **100% AI-native** — entire codebase generated with AI assistance
+- **100% AI-native** — entire codebase generated with AI for low level optimization
 - **100% Rust** — single binary, no runtime deps, no GC
 - **100% hardware-optimized** — zero-copy paths, no intermediary abstractions, direct V4L2/AVFoundation/SocketCAN access
 - **100% cross-compatible** — virtualize your robot and connect from anywhere, any OS (Linux, macOS, Windows), any language (Python, Rust, JavaScript)
-- **Peer-to-peer with Iroh** — Direct QUIC connections with built-in NAT traversal and Ed25519 identity. No relay needed when peers can reach each other.
-- **Web with MoQ** — Media over QUIC relay, works in browsers via WebTransport. Lower latency than WebSocket and WebRTC for media streaming.
-- **Encrypted from day one** — TLS 1.3 via QUIC. Peers identified by public keys.
-- **Full duplex** — Simultaneous read and write over a single QUIC connection. Dedicated reader/writer threads for serial and CAN ensure send and receive never block each other.
 
 ```
 Robot Hardware          Network              Clients
@@ -18,8 +14,56 @@ Robot Hardware          Network              Clients
 │ Serial   │────▶│  MoQ  (Relay)    │────▶│ JavaScript   │
 │ CAN Bus  │     │  QUIC / TLS 1.3  │     │ Rust         │
 └──────────┘     └──────────────────┘     └──────────────┘
-  XOQ Server                                XOQ Client
+  XoQ Server                                XoQ Client
 ```
+
+## Comparison Table
+
+|                         | XoQ                                 | WebRTC                                      | rosbridge       | gRPC               | ROS 2 (DDS)         |
+| ----------------------- | ----------------------------------- | ------------------------------------------- | --------------- | ------------------ | ------------------- |
+| **Setup**               | Single binary, Public Key + Relay   | Complex (Signaling + STUN/TURN + SDP + ICE) | ROS + rosbridge | Protobuf toolchain | ROS + DDS vendor    |
+| **Encryption**          | Always on (TLS 1.3)                 | Always on (DTLS)                            | None by default | Optional TLS       | Optional SROS2      |
+| **P2P / NAT traversal** | Built-in (Iroh)                     | ICE/STUN/TURN                               | No              | No                 | No                  |
+| **Zero-copy HW**        | Yes (V4L2, AVFoundation, SocketCAN) | No                                          | No              | No                 | No                  |
+| **Browser**             | WebTransport (MoQ)                  | Yes                                         | Yes             | grpc-web (limited) | No                  |
+| **Transport**           | QUIC / TLS 1.3                      | DTLS / SRTP                                 | TCP / WebSocket | HTTP/2             | DDS (UDP multicast) |
+| **Languages**           | Python, JS, Rust                    | JS, native SDKs                             | Any (JSON)      | Any (codegen)      | Python, C++         |
+| **Cross-platform**      | Linux, macOS, Windows               | All (browser)                               | Linux (primary) | All                | Linux (primary)     |
+
+## Use Cases
+
+| Use Case                              | How XoQ Helps                                                                                                                                              |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Remote teleoperation**              | Full-duplex serial/CAN bridging with sub-ms overhead — operate arms, grippers, and mobile bases over the internet as if wired locally                      |
+| **RL / VLM online training at scale** | Stream camera + proprioception from a fleet of robots to GPU clusters; drop-in Python clients mean training scripts don't change                           |
+| **Inference at scale**                | Send model outputs back to robots over the same QUIC connection; encrypted P2P means no VPN or port forwarding per robot                                   |
+| **CI/CD of robots**                   | Run hardware-in-the-loop tests from anywhere — flash firmware over remote serial, validate CAN protocols, and capture camera feeds without physical access |
+
+---
+
+## Roadmap
+
+| Feature                          | Description                                                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Audio                            | OS-level hardware AEC, noise cancellation, and compression                                                                                |
+| CMAF Format                      | Fragmented MP4 for dataset recording with robotic data track for Training dataset streaming (online + offline, compatible with inference) |
+| Framework compat                 | dora-rs, ROS, ROS2, and LeRobot                                                                                                           |
+| Embedded targets                 | ESP32 / STM32 (server and client)                                                                                                         |
+| Intel RealSense / lidar / Orbbec | `pyrealsense2` drop-in replacement                                                                                                        |
+| C/C++ bindings                   | Via Rust ABI                                                                                                                              |
+
+---
+
+## Reference
+
+### Hardware Support
+
+| Device  | Server Platform       | HW Encoding                | Feature Flags           |
+| ------- | --------------------- | -------------------------- | ----------------------- |
+| Camera  | Linux (V4L2)          | NVIDIA NVENC (H.264/HEVC)  | `camera`, `nvenc`       |
+| Camera  | macOS (AVFoundation)  | Apple VideoToolbox (H.264) | `camera-macos`, `vtenc` |
+| Serial  | Linux, macOS, Windows | —                          | `serial`                |
+| CAN Bus | Linux (SocketCAN)     | —                          | `can`                   |
 
 ## Getting Started
 
@@ -87,21 +131,6 @@ for msg in bus:
 
 ---
 
-## Reference
-
-> Complete technical facts
-
-### Hardware Support
-
-| Device  | Server Platform       | HW Encoding                | Feature Flags           |
-| ------- | --------------------- | -------------------------- | ----------------------- |
-| Camera  | Linux (V4L2)          | NVIDIA NVENC (H.264/HEVC)  | `camera`, `nvenc`       |
-| Camera  | macOS (AVFoundation)  | Apple VideoToolbox (H.264) | `camera-macos`, `vtenc` |
-| Serial  | Linux, macOS, Windows | —                          | `serial`                |
-| CAN Bus | Linux (SocketCAN)     | —                          | `can`                   |
-
-Clients are cross-platform — no hardware feature flags needed.
-
 ### Client Libraries
 
 #### Python
@@ -165,22 +194,6 @@ Clients target macOS, Linux, and Windows. Future: C/C++ bindings via Rust ABI.
 | `reachy_mini`      | Reachy Mini robot control over remote serial               | `iroh`, `serial`                 |
 | `moq_test`         | MoQ relay publish/subscribe diagnostic test                | —                                |
 
-### Building Examples
-
-```bash
-# Camera server (macOS with H.264)
-cargo run --example camera_server --features "iroh,camera-macos,vtenc"
-
-# Camera server (Linux with NVENC)
-cargo run --example camera_server --features "iroh,camera,nvenc"
-
-# Serial bridge
-cargo run --example serial_server --features "iroh,serial"
-
-# CAN bridge
-cargo run --example can_server --features "iroh,can"
-```
-
 ### ALPN Protocols
 
 | Protocol            | Purpose                                   |
@@ -207,17 +220,6 @@ cargo run --example can_server --features "iroh,can"
 | `camera-remote` | Remote camera client (cross-platform)            |
 | `can-remote`    | Remote CAN client (cross-platform)               |
 | `image`         | Image processing support                         |
-
-### Roadmap
-
-- [ ] Audio capture and streaming — OS-level hardware AEC, noise cancellation, and compression
-- [ ] CMAF fragmented MP4 for dataset recording
-- [ ] Robotic data tracks for training dataset streaming (online + offline, compatible with inference)
-- [ ] Compatibility with dora-rs, ROS, ROS2, and LeRobot
-- [ ] ESP32 / STM32 targets (server and client)
-- [ ] Intel RealSense (`pyrealsense2` drop-in)
-- [ ] GeoDNS and custom relay infrastructure
-- [ ] C/C++ bindings via Rust ABI
 
 ### License
 
