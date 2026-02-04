@@ -10,6 +10,7 @@
 use anyhow::Result;
 use socketcan::Socket;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -39,6 +40,7 @@ fn can_reader_thread(
     enable_fd: bool,
     tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
     init_tx: std::sync::mpsc::SyncSender<Result<()>>,
+    writer_busy: Arc<AtomicU64>,
 ) {
     let timeout = Duration::from_millis(100);
 
@@ -61,6 +63,7 @@ fn can_reader_thread(
         let _ = init_tx.send(Ok(()));
 
         let mut last_read_time: Option<Instant> = None;
+        let mut consecutive_timeouts: u64 = 0;
         loop {
             match socket.read_frame() {
                 Ok(frame) => {
@@ -68,13 +71,17 @@ fn can_reader_thread(
                     if let Some(prev) = last_read_time {
                         let gap = now.duration_since(prev);
                         if gap > Duration::from_millis(50) {
+                            let writer_writes = writer_busy.load(Ordering::Relaxed);
                             tracing::warn!(
-                                "CAN reader: {:.1}ms gap between reads (missed cycle?)",
-                                gap.as_secs_f64() * 1000.0
+                                "CAN reader: {:.1}ms gap between reads, {} timeouts during gap, writer cumulative writes: {}",
+                                gap.as_secs_f64() * 1000.0,
+                                consecutive_timeouts,
+                                writer_writes,
                             );
                         }
                     }
                     last_read_time = Some(now);
+                    consecutive_timeouts = 0;
 
                     let any_frame = match frame {
                         socketcan::CanAnyFrame::Normal(f) => match CanFrame::try_from(f) {
@@ -111,6 +118,7 @@ fn can_reader_thread(
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
+                    consecutive_timeouts += 1;
                     continue;
                 }
                 Err(e) => {
@@ -138,6 +146,7 @@ fn can_reader_thread(
         let _ = init_tx.send(Ok(()));
 
         let mut last_read_time: Option<Instant> = None;
+        let mut consecutive_timeouts: u64 = 0;
         loop {
             match socket.read_frame() {
                 Ok(frame) => {
@@ -145,13 +154,17 @@ fn can_reader_thread(
                     if let Some(prev) = last_read_time {
                         let gap = now.duration_since(prev);
                         if gap > Duration::from_millis(50) {
+                            let writer_writes = writer_busy.load(Ordering::Relaxed);
                             tracing::warn!(
-                                "CAN reader: {:.1}ms gap between reads (missed cycle?)",
-                                gap.as_secs_f64() * 1000.0
+                                "CAN reader: {:.1}ms gap between reads, {} timeouts during gap, writer cumulative writes: {}",
+                                gap.as_secs_f64() * 1000.0,
+                                consecutive_timeouts,
+                                writer_writes,
                             );
                         }
                     }
                     last_read_time = Some(now);
+                    consecutive_timeouts = 0;
 
                     let any_frame = match CanFrame::try_from(frame) {
                         Ok(cf) => AnyCanFrame::Can(cf),
@@ -176,6 +189,7 @@ fn can_reader_thread(
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
+                    consecutive_timeouts += 1;
                     continue;
                 }
                 Err(e) => {
@@ -198,6 +212,7 @@ fn can_writer_thread(
     jitter_buffer: bool,
     mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     init_tx: std::sync::mpsc::SyncSender<Result<()>>,
+    writer_busy: Arc<AtomicU64>,
 ) {
     if enable_fd {
         let socket = match socketcan::CanFdSocket::open(&interface) {
@@ -213,7 +228,9 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
+        let writer_busy_ref = &writer_busy;
         let write_fn = |frame: &AnyCanFrame| {
+            let write_start = Instant::now();
             for attempt in 0..4u32 {
                 let result = match frame {
                     AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
@@ -232,6 +249,14 @@ fn can_writer_thread(
                     },
                 };
                 if result.is_ok() {
+                    writer_busy_ref.fetch_add(1, Ordering::Relaxed);
+                    let elapsed = write_start.elapsed();
+                    if elapsed > Duration::from_millis(2) {
+                        tracing::warn!(
+                            "CAN writer: single frame write took {:.1}ms",
+                            elapsed.as_secs_f64() * 1000.0
+                        );
+                    }
                     return;
                 }
                 let err = result.unwrap_err();
@@ -269,7 +294,9 @@ fn can_writer_thread(
         };
         let _ = init_tx.send(Ok(()));
 
+        let writer_busy_ref = &writer_busy;
         let write_fn = |frame: &AnyCanFrame| {
+            let write_start = Instant::now();
             for attempt in 0..4u32 {
                 let result = match frame {
                     AnyCanFrame::Can(f) => match socketcan::CanFrame::try_from(f) {
@@ -285,6 +312,14 @@ fn can_writer_thread(
                     }
                 };
                 if result.is_ok() {
+                    writer_busy_ref.fetch_add(1, Ordering::Relaxed);
+                    let elapsed = write_start.elapsed();
+                    if elapsed > Duration::from_millis(2) {
+                        tracing::warn!(
+                            "CAN writer: single frame write took {:.1}ms",
+                            elapsed.as_secs_f64() * 1000.0
+                        );
+                    }
                     return;
                 }
                 let err = result.unwrap_err();
@@ -540,11 +575,20 @@ impl Drop for JitterStats {
 /// Write all frames in a batch with a small delay between each to avoid
 /// overflowing the kernel CAN socket buffer (ENOBUFS).
 fn write_batch(batch: &[AnyCanFrame], write_frame: &mut impl FnMut(&AnyCanFrame)) {
+    let batch_start = Instant::now();
     for (i, f) in batch.iter().enumerate() {
         write_frame(f);
         if i + 1 < batch.len() {
             std::thread::sleep(INTER_FRAME_DELAY);
         }
+    }
+    let batch_elapsed = batch_start.elapsed();
+    if batch_elapsed > Duration::from_millis(5) {
+        tracing::warn!(
+            "CAN writer: write_batch took {:.1}ms ({} frames)",
+            batch_elapsed.as_secs_f64() * 1000.0,
+            batch.len()
+        );
     }
 }
 
@@ -889,22 +933,28 @@ impl CanServer {
         // so network bursts after jitter don't drop frames before the jitter buffer sees them.
         let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(128);
 
+        // Shared counter: writer increments on each successful CAN write,
+        // reader reads it during gaps to see if writes were happening concurrently.
+        let writer_busy = Arc::new(AtomicU64::new(0));
+
         // Spawn reader thread
         let (reader_init_tx, reader_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
         let iface_reader = interface.to_string();
+        let writer_busy_reader = Arc::clone(&writer_busy);
         std::thread::Builder::new()
             .name(format!("can-read-{}", interface))
             .spawn(move || {
-                can_reader_thread(iface_reader, enable_fd, can_read_tx, reader_init_tx);
+                can_reader_thread(iface_reader, enable_fd, can_read_tx, reader_init_tx, writer_busy_reader);
             })?;
 
         // Spawn writer thread
         let (writer_init_tx, writer_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
         let iface_writer = interface.to_string();
+        let writer_busy_writer = Arc::clone(&writer_busy);
         std::thread::Builder::new()
             .name(format!("can-write-{}", interface))
             .spawn(move || {
-                can_writer_thread(iface_writer, enable_fd, jitter_buffer, can_write_rx, writer_init_tx);
+                can_writer_thread(iface_writer, enable_fd, jitter_buffer, can_write_rx, writer_init_tx, writer_busy_writer);
             })?;
 
         // Wait for both threads to initialize (propagate socket open errors)
