@@ -30,7 +30,8 @@ fn can_reader_thread_fd(
     write_count: Arc<AtomicU64>,
 ) {
     let mut last_read = Instant::now();
-    let mut timeouts: u32 = 0;
+    let mut would_blocks: u32 = 0;
+    let mut timed_outs: u32 = 0;
     let mut writes_at_gap_start: u64 = 0;
     loop {
         match socket.read_frame() {
@@ -40,14 +41,16 @@ fn can_reader_thread_fd(
                 let writes_during = writes_now - writes_at_gap_start;
                 if gap > Duration::from_millis(50) && writes_during >= 3 {
                     tracing::warn!(
-                        "CAN response delay: {:.1}ms ({} timeouts, {} writes during gap)",
+                        "CAN response delay: {:.1}ms ({} timed_out, {} would_block, {} writes during gap)",
                         gap.as_secs_f64() * 1000.0,
-                        timeouts,
+                        timed_outs,
+                        would_blocks,
                         writes_during,
                     );
                 }
                 last_read = Instant::now();
-                timeouts = 0;
+                would_blocks = 0;
+                timed_outs = 0;
                 writes_at_gap_start = writes_now;
                 let any_frame = match frame {
                     socketcan::CanAnyFrame::Normal(f) => match CanFrame::try_from(f) {
@@ -72,11 +75,12 @@ fn can_reader_thread_fd(
                     break;
                 }
             }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                timeouts += 1;
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                would_blocks += 1;
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                timed_outs += 1;
                 continue;
             }
             Err(e) => {
@@ -94,7 +98,8 @@ fn can_reader_thread_std(
     write_count: Arc<AtomicU64>,
 ) {
     let mut last_read = Instant::now();
-    let mut timeouts: u32 = 0;
+    let mut would_blocks: u32 = 0;
+    let mut timed_outs: u32 = 0;
     let mut writes_at_gap_start: u64 = 0;
     loop {
         match socket.read_frame() {
@@ -104,14 +109,16 @@ fn can_reader_thread_std(
                 let writes_during = writes_now - writes_at_gap_start;
                 if gap > Duration::from_millis(50) && writes_during >= 3 {
                     tracing::warn!(
-                        "CAN response delay: {:.1}ms ({} timeouts, {} writes during gap)",
+                        "CAN response delay: {:.1}ms ({} timed_out, {} would_block, {} writes during gap)",
                         gap.as_secs_f64() * 1000.0,
-                        timeouts,
+                        timed_outs,
+                        would_blocks,
                         writes_during,
                     );
                 }
                 last_read = Instant::now();
-                timeouts = 0;
+                would_blocks = 0;
+                timed_outs = 0;
                 writes_at_gap_start = writes_now;
                 let any_frame = match CanFrame::try_from(frame) {
                     Ok(cf) => AnyCanFrame::Can(cf),
@@ -124,11 +131,12 @@ fn can_reader_thread_std(
                     break;
                 }
             }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                timeouts += 1;
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                would_blocks += 1;
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                timed_outs += 1;
                 continue;
             }
             Err(e) => {
