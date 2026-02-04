@@ -101,7 +101,12 @@ pub fn parse_annex_b(data: &[u8]) -> ParsedFrame {
     let mut nal_starts = Vec::new();
     let mut i = 0;
     while i < data.len() {
-        if i + 3 < data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1 {
+        if i + 3 < data.len()
+            && data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 0
+            && data[i + 3] == 1
+        {
             // 4-byte start code
             nal_starts.push(i + 4);
             i += 4;
@@ -123,9 +128,18 @@ pub fn parse_annex_b(data: &[u8]) -> ParsedFrame {
             // Find the start code position (not the NAL data start) for the next NAL
             let next_start = nal_starts[idx + 1];
             // Back up past the start code to find where this NAL's data ends
-            if next_start >= 4 && data[next_start - 4] == 0 && data[next_start - 3] == 0 && data[next_start - 2] == 0 && data[next_start - 1] == 1 {
+            if next_start >= 4
+                && data[next_start - 4] == 0
+                && data[next_start - 3] == 0
+                && data[next_start - 2] == 0
+                && data[next_start - 1] == 1
+            {
                 next_start - 4
-            } else if next_start >= 3 && data[next_start - 3] == 0 && data[next_start - 2] == 0 && data[next_start - 1] == 1 {
+            } else if next_start >= 3
+                && data[next_start - 3] == 0
+                && data[next_start - 2] == 0
+                && data[next_start - 1] == 1
+            {
                 next_start - 3
             } else {
                 next_start
@@ -263,7 +277,13 @@ impl CmafMuxer {
     /// This must be called once before adding frames. The initialization segment
     /// contains codec configuration (SPS/PPS) and must be sent before any media
     /// segments.
-    pub fn create_init_segment(&mut self, sps: &[u8], pps: &[u8], width: u32, height: u32) -> Vec<u8> {
+    pub fn create_init_segment(
+        &mut self,
+        sps: &[u8],
+        pps: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
         self.sps = sps.to_vec();
         self.pps = pps.to_vec();
         self.width = width;
@@ -457,9 +477,7 @@ impl CmafMuxer {
         content.extend_from_slice(&[0; 8]); // reserved
 
         // Matrix (identity)
-        let matrix: [u32; 9] = [
-            0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000,
-        ];
+        let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
         for m in &matrix {
             content.extend_from_slice(&m.to_be_bytes());
         }
@@ -504,16 +522,14 @@ impl CmafMuxer {
         content.extend_from_slice(&0u16.to_be_bytes()); // reserved
 
         // Matrix
-        let matrix: [u32; 9] = [
-            0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000,
-        ];
+        let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
         for m in &matrix {
             content.extend_from_slice(&m.to_be_bytes());
         }
 
         // Width and height as 16.16 fixed point
-        content.extend_from_slice(&((self.width as u32) << 16).to_be_bytes());
-        content.extend_from_slice(&((self.height as u32) << 16).to_be_bytes());
+        content.extend_from_slice(&(self.width << 16).to_be_bytes());
+        content.extend_from_slice(&(self.height << 16).to_be_bytes());
 
         let size = 8 + content.len();
         buf.extend_from_slice(&(size as u32).to_be_bytes());
@@ -851,7 +867,7 @@ impl CmafMuxer {
         let mut content = Vec::new();
 
         content.push(0); // version
-        // flags: default-base-is-moof (0x020000)
+                         // flags: default-base-is-moof (0x020000)
         content.extend_from_slice(&[0x02, 0x00, 0x00]);
         content.extend_from_slice(&self.track_id.to_be_bytes());
 
@@ -895,9 +911,9 @@ impl CmafMuxer {
         let mut content = Vec::new();
 
         content.push(0); // version
-        // flags: data-offset-present (0x01), sample-duration (0x100),
-        //        sample-size (0x200), sample-flags (0x400),
-        //        sample-composition-time-offset (0x800)
+                         // flags: data-offset-present (0x01), sample-duration (0x100),
+                         //        sample-size (0x200), sample-flags (0x400),
+                         //        sample-composition-time-offset (0x800)
         content.extend_from_slice(&[0x00, 0x0F, 0x01]); // all flags
         content.extend_from_slice(&sample_count.to_be_bytes());
         content.extend_from_slice(&(data_offset as u32).to_be_bytes());
@@ -957,28 +973,43 @@ mod tests {
 
     #[test]
     fn test_nal_unit_types() {
-        let idr = NalUnit { data: vec![0x65, 0x00], nal_type: nal_unit_type::IDR_SLICE };
+        let idr = NalUnit {
+            data: vec![0x65, 0x00],
+            nal_type: nal_unit_type::IDR_SLICE,
+        };
         assert!(idr.is_idr());
         assert!(idr.is_slice());
         assert!(!idr.is_sps());
         assert!(!idr.is_pps());
 
-        let non_idr = NalUnit { data: vec![0x41, 0x00], nal_type: nal_unit_type::NON_IDR_SLICE };
+        let non_idr = NalUnit {
+            data: vec![0x41, 0x00],
+            nal_type: nal_unit_type::NON_IDR_SLICE,
+        };
         assert!(!non_idr.is_idr());
         assert!(non_idr.is_slice());
 
-        let sps = NalUnit { data: vec![0x67, 0x64, 0x00, 0x1f], nal_type: nal_unit_type::SPS };
+        let sps = NalUnit {
+            data: vec![0x67, 0x64, 0x00, 0x1f],
+            nal_type: nal_unit_type::SPS,
+        };
         assert!(sps.is_sps());
         assert!(!sps.is_slice());
 
-        let pps = NalUnit { data: vec![0x68, 0xee, 0x3c], nal_type: nal_unit_type::PPS };
+        let pps = NalUnit {
+            data: vec![0x68, 0xee, 0x3c],
+            nal_type: nal_unit_type::PPS,
+        };
         assert!(pps.is_pps());
         assert!(!pps.is_slice());
     }
 
     #[test]
     fn test_nal_unit_to_annex_b() {
-        let nal = NalUnit { data: vec![0x65, 0xAA, 0xBB], nal_type: nal_unit_type::IDR_SLICE };
+        let nal = NalUnit {
+            data: vec![0x65, 0xAA, 0xBB],
+            nal_type: nal_unit_type::IDR_SLICE,
+        };
         let annex_b = nal.to_annex_b();
         assert_eq!(&annex_b[..4], &[0x00, 0x00, 0x00, 0x01]);
         assert_eq!(&annex_b[4..], &[0x65, 0xAA, 0xBB]);
@@ -1083,7 +1114,10 @@ mod tests {
     #[test]
     fn test_add_frame_before_init() {
         let mut muxer = CmafMuxer::new(CmafConfig::default());
-        let nals = vec![NalUnit { data: vec![0x65, 0x88], nal_type: nal_unit_type::IDR_SLICE }];
+        let nals = vec![NalUnit {
+            data: vec![0x65, 0x88],
+            nal_type: nal_unit_type::IDR_SLICE,
+        }];
         let result = muxer.add_frame(&nals, 0, 0, 3000, true);
         assert!(result.is_none());
     }
@@ -1100,13 +1134,19 @@ mod tests {
         muxer.create_init_segment(&sps, &pps, 640, 480);
 
         // First frame (keyframe) - no segment returned yet
-        let nals = vec![NalUnit { data: vec![0x65, 0x88, 0x80], nal_type: nal_unit_type::IDR_SLICE }];
+        let nals = vec![NalUnit {
+            data: vec![0x65, 0x88, 0x80],
+            nal_type: nal_unit_type::IDR_SLICE,
+        }];
         let seg = muxer.add_frame(&nals, 0, 0, 3000, true);
         assert!(seg.is_none());
         assert_eq!(muxer.pending_frame_count(), 1);
 
         // Second frame (non-keyframe)
-        let nals = vec![NalUnit { data: vec![0x41, 0x9A, 0x00], nal_type: nal_unit_type::NON_IDR_SLICE }];
+        let nals = vec![NalUnit {
+            data: vec![0x41, 0x9A, 0x00],
+            nal_type: nal_unit_type::NON_IDR_SLICE,
+        }];
         let seg = muxer.add_frame(&nals, 3000, 3000, 3000, false);
         assert!(seg.is_none());
         assert_eq!(muxer.pending_frame_count(), 2);

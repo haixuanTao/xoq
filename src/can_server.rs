@@ -141,51 +141,52 @@ fn can_reader_thread_fd(
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 consecutive_timeouts += 1;
-                let now = Instant::now();
-                if consecutive_timeouts == 1 {
-                    // Gap just started
-                    gap_start_time = Some(now);
-                    writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
-                    let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
-                    let ms_since_last_write = if last_wr_ns > 0 {
-                        let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
-                        if now > wr_instant {
-                            now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                // Only log gap diagnostics if we've ever read a frame (skip idle/no-client state)
+                if last_read_time.is_some() {
+                    let now = Instant::now();
+                    if consecutive_timeouts == 1 {
+                        gap_start_time = Some(now);
+                        writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
+                        let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
+                        let ms_since_last_write = if last_wr_ns > 0 {
+                            let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
+                            if now > wr_instant {
+                                now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            } else {
+                                0.0
+                            }
                         } else {
-                            0.0
-                        }
-                    } else {
-                        -1.0
-                    };
-                    tracing::warn!(
-                        "CAN gap START: last read was id=0x{:x}, last write was {:.1}ms ago, writer total={}",
-                        last_read_id, ms_since_last_write, writer_writes_at_gap_start,
-                    );
-                } else if consecutive_timeouts % 3 == 0 {
-                    // Progress every 3rd timeout (~30ms)
-                    let gap_ms = gap_start_time
-                        .map(|s| now.duration_since(s).as_secs_f64() * 1000.0)
-                        .unwrap_or(0.0);
-                    let writer_writes_now = writer_busy.load(Ordering::Relaxed);
-                    let writes_since_gap = writer_writes_now - writer_writes_at_gap_start;
-                    let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
-                    let ms_since_last_write = if last_wr_ns > 0 {
-                        let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
-                        if now > wr_instant {
-                            now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            -1.0
+                        };
+                        tracing::warn!(
+                            "CAN gap START: last read was id=0x{:x}, last write was {:.1}ms ago, writer total={}",
+                            last_read_id, ms_since_last_write, writer_writes_at_gap_start,
+                        );
+                    } else if consecutive_timeouts % 3 == 0 {
+                        let gap_ms = gap_start_time
+                            .map(|s| now.duration_since(s).as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
+                        let writer_writes_now = writer_busy.load(Ordering::Relaxed);
+                        let writes_since_gap = writer_writes_now - writer_writes_at_gap_start;
+                        let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
+                        let ms_since_last_write = if last_wr_ns > 0 {
+                            let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
+                            if now > wr_instant {
+                                now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            } else {
+                                0.0
+                            }
                         } else {
-                            0.0
-                        }
-                    } else {
-                        -1.0
-                    };
-                    tracing::warn!(
-                        "CAN gap +{:.0}ms: timeout #{}, {} writes so far, last write {:.1}ms ago",
-                        gap_ms,
-                        consecutive_timeouts,
-                        writes_since_gap,
-                        ms_since_last_write,
-                    );
+                            -1.0
+                        };
+                        tracing::warn!(
+                            "CAN gap +{:.0}ms: timeout #{}, {} writes so far, last write {:.1}ms ago",
+                            gap_ms,
+                            consecutive_timeouts,
+                            writes_since_gap,
+                            ms_since_last_write,
+                        );
+                    }
                 }
                 continue;
             }
@@ -274,49 +275,51 @@ fn can_reader_thread_std(
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 consecutive_timeouts += 1;
-                let now = Instant::now();
-                if consecutive_timeouts == 1 {
-                    gap_start_time = Some(now);
-                    writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
-                    let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
-                    let ms_since_last_write = if last_wr_ns > 0 {
-                        let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
-                        if now > wr_instant {
-                            now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                if last_read_time.is_some() {
+                    let now = Instant::now();
+                    if consecutive_timeouts == 1 {
+                        gap_start_time = Some(now);
+                        writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
+                        let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
+                        let ms_since_last_write = if last_wr_ns > 0 {
+                            let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
+                            if now > wr_instant {
+                                now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            } else {
+                                0.0
+                            }
                         } else {
-                            0.0
-                        }
-                    } else {
-                        -1.0
-                    };
-                    tracing::warn!(
-                        "CAN gap START: last read was id=0x{:x}, last write was {:.1}ms ago, writer total={}",
-                        last_read_id, ms_since_last_write, writer_writes_at_gap_start,
-                    );
-                } else if consecutive_timeouts % 3 == 0 {
-                    let gap_ms = gap_start_time
-                        .map(|s| now.duration_since(s).as_secs_f64() * 1000.0)
-                        .unwrap_or(0.0);
-                    let writer_writes_now = writer_busy.load(Ordering::Relaxed);
-                    let writes_since_gap = writer_writes_now - writer_writes_at_gap_start;
-                    let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
-                    let ms_since_last_write = if last_wr_ns > 0 {
-                        let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
-                        if now > wr_instant {
-                            now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            -1.0
+                        };
+                        tracing::warn!(
+                            "CAN gap START: last read was id=0x{:x}, last write was {:.1}ms ago, writer total={}",
+                            last_read_id, ms_since_last_write, writer_writes_at_gap_start,
+                        );
+                    } else if consecutive_timeouts % 3 == 0 {
+                        let gap_ms = gap_start_time
+                            .map(|s| now.duration_since(s).as_secs_f64() * 1000.0)
+                            .unwrap_or(0.0);
+                        let writer_writes_now = writer_busy.load(Ordering::Relaxed);
+                        let writes_since_gap = writer_writes_now - writer_writes_at_gap_start;
+                        let last_wr_ns = last_write_nanos.load(Ordering::Relaxed);
+                        let ms_since_last_write = if last_wr_ns > 0 {
+                            let wr_instant = epoch + Duration::from_nanos(last_wr_ns);
+                            if now > wr_instant {
+                                now.duration_since(wr_instant).as_secs_f64() * 1000.0
+                            } else {
+                                0.0
+                            }
                         } else {
-                            0.0
-                        }
-                    } else {
-                        -1.0
-                    };
-                    tracing::warn!(
-                        "CAN gap +{:.0}ms: timeout #{}, {} writes so far, last write {:.1}ms ago",
-                        gap_ms,
-                        consecutive_timeouts,
-                        writes_since_gap,
-                        ms_since_last_write,
-                    );
+                            -1.0
+                        };
+                        tracing::warn!(
+                            "CAN gap +{:.0}ms: timeout #{}, {} writes so far, last write {:.1}ms ago",
+                            gap_ms,
+                            consecutive_timeouts,
+                            writes_since_gap,
+                            ms_since_last_write,
+                        );
+                    }
                 }
                 continue;
             }
