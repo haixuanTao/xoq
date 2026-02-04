@@ -60,9 +60,22 @@ fn can_reader_thread(
         }
         let _ = init_tx.send(Ok(()));
 
+        let mut last_read_time: Option<Instant> = None;
         loop {
             match socket.read_frame() {
                 Ok(frame) => {
+                    let now = Instant::now();
+                    if let Some(prev) = last_read_time {
+                        let gap = now.duration_since(prev);
+                        if gap > Duration::from_millis(50) {
+                            tracing::warn!(
+                                "CAN reader: {:.1}ms gap between reads (missed cycle?)",
+                                gap.as_secs_f64() * 1000.0
+                            );
+                        }
+                    }
+                    last_read_time = Some(now);
+
                     let any_frame = match frame {
                         socketcan::CanAnyFrame::Normal(f) => match CanFrame::try_from(f) {
                             Ok(cf) => AnyCanFrame::Can(cf),
@@ -82,8 +95,16 @@ fn can_reader_thread(
                             continue;
                         }
                     };
+                    let send_start = Instant::now();
                     if tx.blocking_send(any_frame).is_err() {
                         break; // Receiver dropped
+                    }
+                    let send_elapsed = send_start.elapsed();
+                    if send_elapsed > Duration::from_millis(1) {
+                        tracing::warn!(
+                            "CAN reader: blocking_send took {:.1}ms (channel backpressure)",
+                            send_elapsed.as_secs_f64() * 1000.0
+                        );
                     }
                 }
                 Err(e)
@@ -116,9 +137,22 @@ fn can_reader_thread(
         }
         let _ = init_tx.send(Ok(()));
 
+        let mut last_read_time: Option<Instant> = None;
         loop {
             match socket.read_frame() {
                 Ok(frame) => {
+                    let now = Instant::now();
+                    if let Some(prev) = last_read_time {
+                        let gap = now.duration_since(prev);
+                        if gap > Duration::from_millis(50) {
+                            tracing::warn!(
+                                "CAN reader: {:.1}ms gap between reads (missed cycle?)",
+                                gap.as_secs_f64() * 1000.0
+                            );
+                        }
+                    }
+                    last_read_time = Some(now);
+
                     let any_frame = match CanFrame::try_from(frame) {
                         Ok(cf) => AnyCanFrame::Can(cf),
                         Err(e) => {
@@ -126,8 +160,16 @@ fn can_reader_thread(
                             continue;
                         }
                     };
+                    let send_start = Instant::now();
                     if tx.blocking_send(any_frame).is_err() {
                         break; // Receiver dropped
+                    }
+                    let send_elapsed = send_start.elapsed();
+                    if send_elapsed > Duration::from_millis(1) {
+                        tracing::warn!(
+                            "CAN reader: blocking_send took {:.1}ms (channel backpressure)",
+                            send_elapsed.as_secs_f64() * 1000.0
+                        );
                     }
                 }
                 Err(e)
@@ -1062,11 +1104,20 @@ async fn handle_connection(
             }
 
             // Single write + flush for entire batch
+            let flush_start = Instant::now();
             if send.write_all(&batch_buf).await.is_err() {
                 break;
             }
             if send.flush().await.is_err() {
                 break;
+            }
+            let flush_elapsed = flush_start.elapsed();
+            if flush_elapsed > Duration::from_millis(5) {
+                tracing::warn!(
+                    "CAN→net: flush took {:.1}ms ({} bytes)",
+                    flush_elapsed.as_secs_f64() * 1000.0,
+                    batch_buf.len()
+                );
             }
         }
 
