@@ -64,24 +64,30 @@ fn can_reader_thread(
 
         let mut last_read_time: Option<Instant> = None;
         let mut consecutive_timeouts: u64 = 0;
+        let mut writer_writes_at_gap_start: u64 = 0;
         loop {
+            let read_start = Instant::now();
             match socket.read_frame() {
                 Ok(frame) => {
+                    let read_elapsed = read_start.elapsed();
                     let now = Instant::now();
                     if let Some(prev) = last_read_time {
                         let gap = now.duration_since(prev);
                         if gap > Duration::from_millis(50) {
-                            let writer_writes = writer_busy.load(Ordering::Relaxed);
+                            let writer_writes_now = writer_busy.load(Ordering::Relaxed);
+                            let writes_during_gap = writer_writes_now - writer_writes_at_gap_start;
                             tracing::warn!(
-                                "CAN reader: {:.1}ms gap between reads, {} timeouts during gap, writer cumulative writes: {}",
+                                "CAN reader: {:.1}ms gap between reads (read_frame blocked {:.1}ms), {} timeouts during gap, {} writer writes during gap",
                                 gap.as_secs_f64() * 1000.0,
+                                read_elapsed.as_secs_f64() * 1000.0,
                                 consecutive_timeouts,
-                                writer_writes,
+                                writes_during_gap,
                             );
                         }
                     }
                     last_read_time = Some(now);
                     consecutive_timeouts = 0;
+                    writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
 
                     let any_frame = match frame {
                         socketcan::CanAnyFrame::Normal(f) => match CanFrame::try_from(f) {
@@ -147,24 +153,30 @@ fn can_reader_thread(
 
         let mut last_read_time: Option<Instant> = None;
         let mut consecutive_timeouts: u64 = 0;
+        let mut writer_writes_at_gap_start: u64 = 0;
         loop {
+            let read_start = Instant::now();
             match socket.read_frame() {
                 Ok(frame) => {
+                    let read_elapsed = read_start.elapsed();
                     let now = Instant::now();
                     if let Some(prev) = last_read_time {
                         let gap = now.duration_since(prev);
                         if gap > Duration::from_millis(50) {
-                            let writer_writes = writer_busy.load(Ordering::Relaxed);
+                            let writer_writes_now = writer_busy.load(Ordering::Relaxed);
+                            let writes_during_gap = writer_writes_now - writer_writes_at_gap_start;
                             tracing::warn!(
-                                "CAN reader: {:.1}ms gap between reads, {} timeouts during gap, writer cumulative writes: {}",
+                                "CAN reader: {:.1}ms gap between reads (read_frame blocked {:.1}ms), {} timeouts during gap, {} writer writes during gap",
                                 gap.as_secs_f64() * 1000.0,
+                                read_elapsed.as_secs_f64() * 1000.0,
                                 consecutive_timeouts,
-                                writer_writes,
+                                writes_during_gap,
                             );
                         }
                     }
                     last_read_time = Some(now);
                     consecutive_timeouts = 0;
+                    writer_writes_at_gap_start = writer_busy.load(Ordering::Relaxed);
 
                     let any_frame = match CanFrame::try_from(frame) {
                         Ok(cf) => AnyCanFrame::Can(cf),
