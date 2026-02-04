@@ -25,6 +25,8 @@ pub struct CanServer {
     server_id: String,
     /// Sender for frames to write to CAN interface (bounded tokio channel).
     can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
+    /// Receiver for write-ACKs from the writer thread (one ACK per frame written to CAN).
+    write_ack_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<()>>>,
     /// Receiver for frames read from CAN interface.
     /// Wrapped in `Mutex<Option<>>` so ownership can be transferred to/from connection tasks.
     /// The Mutex is held only for a quick `take()`/`replace()` swap, never across awaits.
@@ -236,6 +238,7 @@ fn can_writer_thread(
     mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     init_tx: std::sync::mpsc::SyncSender<Result<()>>,
     writer_busy: Arc<AtomicU64>,
+    write_ack_tx: tokio::sync::mpsc::Sender<()>,
 ) {
     if enable_fd {
         let socket = match socketcan::CanFdSocket::open(&interface) {
@@ -252,6 +255,7 @@ fn can_writer_thread(
         let _ = init_tx.send(Ok(()));
 
         let writer_busy_ref = &writer_busy;
+        let ack_ref = &write_ack_tx;
         let write_fn = |frame: &AnyCanFrame| {
             let write_start = Instant::now();
             for attempt in 0..4u32 {
@@ -260,6 +264,7 @@ fn can_writer_thread(
                         Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                         Err(e) => {
                             tracing::warn!("CAN frame conversion error on write: {}", e);
+                            let _ = ack_ref.blocking_send(());
                             return;
                         }
                     },
@@ -267,6 +272,7 @@ fn can_writer_thread(
                         Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                         Err(e) => {
                             tracing::warn!("CAN FD frame conversion error on write: {}", e);
+                            let _ = ack_ref.blocking_send(());
                             return;
                         }
                     },
@@ -280,18 +286,17 @@ fn can_writer_thread(
                             elapsed.as_secs_f64() * 1000.0
                         );
                     }
+                    let _ = ack_ref.blocking_send(());
                     return;
                 }
                 let err = result.unwrap_err();
                 if err.raw_os_error() == Some(105) && attempt < 3 {
-                    // ENOBUFS: kernel TX queue full, wait for bus to drain.
-                    // Keep delay short — long delays cause motor response timeouts.
-                    // Better fix: sudo ip link set canX txqueuelen 1000
                     tracing::warn!("ENOBUFS retry {}/3", attempt + 1);
                     std::thread::sleep(Duration::from_micros(100));
                     continue;
                 }
                 tracing::warn!("CAN write error (dropping frame): {}", err);
+                let _ = ack_ref.blocking_send(());
                 return;
             }
         };
@@ -318,6 +323,7 @@ fn can_writer_thread(
         let _ = init_tx.send(Ok(()));
 
         let writer_busy_ref = &writer_busy;
+        let ack_ref = &write_ack_tx;
         let write_fn = |frame: &AnyCanFrame| {
             let write_start = Instant::now();
             for attempt in 0..4u32 {
@@ -326,11 +332,13 @@ fn can_writer_thread(
                         Ok(sf) => socket.write_frame(&sf).map(|_| ()),
                         Err(e) => {
                             tracing::warn!("CAN frame conversion error on write: {}", e);
+                            let _ = ack_ref.blocking_send(());
                             return;
                         }
                     },
                     AnyCanFrame::CanFd(_) => {
                         tracing::warn!("CAN FD frame on standard CAN socket, dropping");
+                        let _ = ack_ref.blocking_send(());
                         return;
                     }
                 };
@@ -343,18 +351,17 @@ fn can_writer_thread(
                             elapsed.as_secs_f64() * 1000.0
                         );
                     }
+                    let _ = ack_ref.blocking_send(());
                     return;
                 }
                 let err = result.unwrap_err();
                 if err.raw_os_error() == Some(105) && attempt < 3 {
-                    // ENOBUFS: kernel TX queue full, wait for bus to drain.
-                    // Keep delay short — long delays cause motor response timeouts.
-                    // Better fix: sudo ip link set canX txqueuelen 1000
                     tracing::warn!("ENOBUFS retry {}/3", attempt + 1);
                     std::thread::sleep(Duration::from_micros(100));
                     continue;
                 }
                 tracing::warn!("CAN write error (dropping frame): {}", err);
+                let _ = ack_ref.blocking_send(());
                 return;
             }
         };
@@ -970,6 +977,10 @@ impl CanServer {
                 can_reader_thread(iface_reader, enable_fd, can_read_tx, reader_init_tx, writer_busy_reader);
             })?;
 
+        // Write-ACK channel: writer thread sends () after each CAN write completes.
+        // The net→CAN task waits for the ACK before reading the next frame from QUIC.
+        let (write_ack_tx, write_ack_rx) = tokio::sync::mpsc::channel::<()>(1);
+
         // Spawn writer thread
         let (writer_init_tx, writer_init_rx) = std::sync::mpsc::sync_channel::<Result<()>>(1);
         let iface_writer = interface.to_string();
@@ -977,7 +988,7 @@ impl CanServer {
         std::thread::Builder::new()
             .name(format!("can-write-{}", interface))
             .spawn(move || {
-                can_writer_thread(iface_writer, enable_fd, jitter_buffer, can_write_rx, writer_init_tx, writer_busy_writer);
+                can_writer_thread(iface_writer, enable_fd, jitter_buffer, can_write_rx, writer_init_tx, writer_busy_writer, write_ack_tx);
             })?;
 
         // Wait for both threads to initialize (propagate socket open errors)
@@ -999,6 +1010,7 @@ impl CanServer {
         Ok(Self {
             server_id,
             can_write_tx,
+            write_ack_rx: std::sync::Mutex::new(Some(write_ack_rx)),
             can_read_rx: std::sync::Mutex::new(Some(can_read_rx)),
             endpoint: Arc::new(server),
         })
@@ -1017,9 +1029,13 @@ impl CanServer {
     pub async fn run(&self) -> Result<()> {
         tracing::info!("CAN bridge server running. ID: {}", self.server_id);
 
+        type ConnState = (
+            tokio::sync::mpsc::Receiver<AnyCanFrame>,
+            tokio::sync::mpsc::Receiver<()>,
+        );
         let mut current_conn: Option<(
             CancellationToken,
-            tokio::task::JoinHandle<tokio::sync::mpsc::Receiver<AnyCanFrame>>,
+            tokio::task::JoinHandle<ConnState>,
         )> = None;
 
         loop {
@@ -1030,13 +1046,14 @@ impl CanServer {
 
             tracing::info!("Client connected: {}", conn.remote_id());
 
-            // Cancel previous connection and recover the receiver
+            // Cancel previous connection and recover the receivers
             if let Some((cancel, handle)) = current_conn.take() {
                 tracing::info!("New client connected, closing previous connection");
                 cancel.cancel();
                 match handle.await {
-                    Ok(rx) => {
+                    Ok((rx, ack_rx)) => {
                         self.can_read_rx.lock().unwrap().replace(rx);
+                        self.write_ack_rx.lock().unwrap().replace(ack_rx);
                     }
                     Err(e) => {
                         tracing::error!("Connection task panicked: {}", e);
@@ -1051,18 +1068,24 @@ impl CanServer {
                 .unwrap()
                 .take()
                 .expect("CAN read receiver should be available");
+            let ack_rx = self
+                .write_ack_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("Write ACK receiver should be available");
 
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             let write_tx = self.can_write_tx.clone();
 
             let handle = tokio::spawn(async move {
-                let (result, rx) = handle_connection(conn, rx, write_tx, cancel_clone).await;
+                let (result, rx, ack_rx) = handle_connection(conn, rx, write_tx, ack_rx, cancel_clone).await;
                 if let Err(e) = &result {
                     tracing::error!("Connection error: {}", e);
                 }
                 tracing::info!("Client disconnected");
-                rx
+                (rx, ack_rx)
             });
 
             current_conn = Some((cancel, handle));
@@ -1090,14 +1113,21 @@ impl CanServer {
                 .unwrap()
                 .take()
                 .expect("CAN read receiver should be available");
+            let ack_rx = self
+                .write_ack_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("Write ACK receiver should be available");
 
             let write_tx = self.can_write_tx.clone();
             let cancel = CancellationToken::new();
 
-            let (result, rx) = handle_connection(conn, rx, write_tx, cancel).await;
+            let (result, rx, ack_rx) = handle_connection(conn, rx, write_tx, ack_rx, cancel).await;
 
-            // Put receiver back
+            // Put receivers back
             self.can_read_rx.lock().unwrap().replace(rx);
+            self.write_ack_rx.lock().unwrap().replace(ack_rx);
 
             tracing::info!("Client disconnected");
 
@@ -1120,14 +1150,20 @@ async fn handle_connection(
     conn: IrohConnection,
     mut can_read_rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
+    mut write_ack_rx: tokio::sync::mpsc::Receiver<()>,
     cancel: CancellationToken,
-) -> (Result<()>, tokio::sync::mpsc::Receiver<AnyCanFrame>) {
+) -> (
+    Result<()>,
+    tokio::sync::mpsc::Receiver<AnyCanFrame>,
+    tokio::sync::mpsc::Receiver<()>,
+) {
     let stream = match conn.accept_stream().await {
         Ok(s) => s,
         Err(e) => {
             return (
                 Err(anyhow::anyhow!("Failed to accept stream: {}", e)),
                 can_read_rx,
+                write_ack_rx,
             );
         }
     };
@@ -1227,6 +1263,13 @@ async fn handle_connection(
                                                 tracing::error!("CAN writer thread died");
                                                 break;
                                             }
+                                            // Wait for the writer to confirm the frame was
+                                            // written to the CAN bus before reading more from
+                                            // QUIC. This prevents write flooding the bus.
+                                            if write_ack_rx.recv().await.is_none() {
+                                                tracing::error!("CAN writer thread died (ACK channel closed)");
+                                                break;
+                                            }
                                             pending.drain(..consumed);
                                         }
                                         Err(e) => {
@@ -1269,12 +1312,13 @@ async fn handle_connection(
             // panic error from run()'s handle.await.
             return (
                 Err(anyhow::anyhow!("CAN-to-net task panicked: {}", e)),
-                // Create a dummy channel — run() will see the JoinError and
-                // won't use this receiver anyway since the handle.await fails.
+                // Create dummy channels — run() will see the JoinError and
+                // won't use these receivers anyway since the handle.await fails.
+                tokio::sync::mpsc::channel(1).1,
                 tokio::sync::mpsc::channel(1).1,
             );
         }
     };
 
-    (result, can_read_rx)
+    (result, can_read_rx, write_ack_rx)
 }
