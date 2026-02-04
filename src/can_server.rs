@@ -34,6 +34,7 @@ fn can_reader_thread_fd(
     let mut timed_outs: u32 = 0;
     let mut writes_at_gap_start: u64 = 0;
     loop {
+        let read_start = Instant::now();
         match socket.read_frame() {
             Ok(frame) => {
                 let gap = last_read.elapsed();
@@ -76,6 +77,13 @@ fn can_reader_thread_fd(
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let call_dur = read_start.elapsed();
+                if call_dur > Duration::from_millis(5) {
+                    tracing::warn!(
+                        "CAN read_frame() WouldBlock took {:.1}ms",
+                        call_dur.as_secs_f64() * 1000.0
+                    );
+                }
                 would_blocks += 1;
                 continue;
             }
@@ -102,6 +110,7 @@ fn can_reader_thread_std(
     let mut timed_outs: u32 = 0;
     let mut writes_at_gap_start: u64 = 0;
     loop {
+        let read_start = Instant::now();
         match socket.read_frame() {
             Ok(frame) => {
                 let gap = last_read.elapsed();
@@ -132,6 +141,13 @@ fn can_reader_thread_std(
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let call_dur = read_start.elapsed();
+                if call_dur > Duration::from_millis(5) {
+                    tracing::warn!(
+                        "CAN read_frame() WouldBlock took {:.1}ms",
+                        call_dur.as_secs_f64() * 1000.0
+                    );
+                }
                 would_blocks += 1;
                 continue;
             }
