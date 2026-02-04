@@ -388,15 +388,13 @@ impl RemoteCanSocket {
                     let write_dur = t0.elapsed();
                     s.flush().await?;
                     let total_dur = t0.elapsed();
-                    if total_dur > std::time::Duration::from_millis(5) {
-                        println!(
-                            "[xoq] write_raw: lock={:.1}ms write={:.1}ms flush={:.1}ms total={:.1}ms",
-                            lock_dur.as_secs_f64() * 1000.0,
-                            (write_dur - lock_dur).as_secs_f64() * 1000.0,
-                            (total_dur - write_dur).as_secs_f64() * 1000.0,
-                            total_dur.as_secs_f64() * 1000.0,
-                        );
-                    }
+                    println!(
+                        "[xoq] write_raw: lock={:.1}ms write={:.1}ms flush={:.1}ms total={:.1}ms",
+                        lock_dur.as_secs_f64() * 1000.0,
+                        (write_dur - lock_dur).as_secs_f64() * 1000.0,
+                        (total_dur - write_dur).as_secs_f64() * 1000.0,
+                        total_dur.as_secs_f64() * 1000.0,
+                    );
                 }
                 ClientInner::Moq { conn } => {
                     let mut c = conn.lock().await;
