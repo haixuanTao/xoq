@@ -383,7 +383,7 @@ impl RemoteCanSocket {
                 ClientInner::Iroh { send, .. } => {
                     let mut s = send.lock().await;
                     s.write_all(data).await?;
-                    // Don't flush here — writes are coalesced and flushed on recv
+                    s.flush().await?;
                 }
                 ClientInner::Moq { conn } => {
                     let mut c = conn.lock().await;
