@@ -358,6 +358,12 @@ impl CanServer {
 
             tracing::info!("Client connected: {}", conn.remote_id());
 
+            // Log connection type (direct vs relay)
+            if let Some(watcher) = self.endpoint.endpoint().conn_type(conn.remote_id().into()) {
+                let conn_type = watcher.get();
+                tracing::info!("Connection type: {:?}", conn_type);
+            }
+
             if let Some((cancel, handle)) = current_conn.take() {
                 tracing::info!("New client connected, closing previous connection");
                 cancel.cancel();
