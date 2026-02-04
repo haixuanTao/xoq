@@ -3,11 +3,32 @@
 //! Provides a builder API for creating P2P connections using iroh.
 
 use anyhow::Result;
-use iroh::endpoint::Connection;
-use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
+use iroh::endpoint::{AckFrequencyConfig, Connection, TransportConfig, VarInt};
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey};
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
+
+/// Create a low-latency QUIC transport config for robotics use.
+///
+/// Key differences from quinn defaults:
+/// - initial_rtt: 10ms (vs 333ms default) — realistic for LAN/direct connections
+/// - ACK frequency: immediate ACKs (threshold=0, max_delay=1ms)
+/// - keep_alive: 1s
+fn low_latency_transport_config() -> TransportConfig {
+    let mut config = TransportConfig::default();
+    config.initial_rtt(Duration::from_millis(10));
+    config.keep_alive_interval(Some(Duration::from_secs(1)));
+
+    // Request peer to ACK immediately (every packet, max 1ms delay)
+    let mut ack_freq = AckFrequencyConfig::default();
+    ack_freq.ack_eliciting_threshold(VarInt::from_u32(0));
+    ack_freq.max_ack_delay(Some(Duration::from_millis(1)));
+    config.ack_frequency_config(Some(ack_freq));
+
+    config
+}
 
 /// Default ALPN protocol for generic P2P communication.
 pub const DEFAULT_ALPN: &[u8] = b"xoq/p2p/0";
@@ -73,9 +94,12 @@ impl IrohServerBuilder {
         let endpoint = Endpoint::builder()
             .alpns(vec![self.alpn])
             .secret_key(secret_key)
+            .relay_mode(RelayMode::Disabled)
+            .transport_config(low_latency_transport_config())
             .bind()
             .await?;
 
+        tracing::info!("Iroh server: relay DISABLED, low-latency transport config active");
         endpoint.online().await;
 
         Ok(IrohServer { endpoint })
@@ -109,7 +133,13 @@ impl IrohClientBuilder {
 
     /// Connect to a server by endpoint ID
     pub async fn connect(self, server_id: PublicKey) -> Result<IrohConnection> {
-        let endpoint = Endpoint::builder().bind().await?;
+        let endpoint = Endpoint::builder()
+            .relay_mode(RelayMode::Disabled)
+            .transport_config(low_latency_transport_config())
+            .bind()
+            .await?;
+
+        tracing::info!("Iroh client: relay DISABLED, low-latency transport config active");
 
         let addr = EndpointAddr::from(server_id);
         let conn = endpoint.connect(addr, &self.alpn).await?;
