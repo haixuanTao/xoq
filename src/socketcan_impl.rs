@@ -19,7 +19,6 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::can_types::wire;
@@ -237,11 +236,24 @@ impl CanSocketBuilder {
                 }
                 let conn = builder.connect_str(&self.server_id).await?;
                 let stream = conn.open_stream().await?;
-                // Split for true full-duplex: reads and writes don't block each other
                 let (send, recv) = stream.split();
+
+                // Spawn background writer task so writes go through the async
+                // thread pool alongside the ConnectionDriver, avoiding the
+                // block_on scheduling issue that causes ~100ms batching.
+                let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+                tokio::spawn(async move {
+                    let mut send = send;
+                    while let Some(data) = write_rx.recv().await {
+                        if send.write_all(&data).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
                 Ok::<_, anyhow::Error>(ClientInner::Iroh {
-                    send: Arc::new(Mutex::new(send)),
                     recv: Arc::new(Mutex::new(recv)),
+                    write_tx,
                     _conn: conn,
                 })
             })?,
@@ -273,9 +285,8 @@ impl CanSocketBuilder {
 /// Internal client representation supporting multiple transports.
 enum ClientInner {
     Iroh {
-        // Split stream for true full-duplex: reads and writes don't block each other
-        send: Arc<Mutex<iroh::endpoint::SendStream>>,
         recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
+        write_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
         _conn: IrohConnection,
     },
     Moq {
@@ -380,24 +391,22 @@ impl RemoteCanSocket {
     }
 
     fn write_raw(&mut self, data: &[u8]) -> Result<()> {
-        self.runtime.block_on(async {
-            match &self.client {
-                ClientInner::Iroh { send, .. } => {
-                    let mut s = send.lock().await;
-                    s.write_all(data).await?;
-                    drop(s);
-                    // quinn's flush() is a no-op — yield to let the connection
-                    // task pack the data into a UDP packet before we return
-                    tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-                }
-                ClientInner::Moq { conn } => {
+        match &self.client {
+            ClientInner::Iroh { write_tx, .. } => {
+                write_tx
+                    .blocking_send(data.to_vec())
+                    .map_err(|_| anyhow::anyhow!("write channel closed"))?;
+            }
+            ClientInner::Moq { conn } => {
+                self.runtime.block_on(async {
                     let mut c = conn.lock().await;
                     let mut track = c.create_track("can");
                     track.write(data.to_vec());
-                }
+                    Ok::<_, anyhow::Error>(())
+                })?;
             }
-            Ok::<_, anyhow::Error>(())
-        })
+        }
+        Ok(())
     }
 
     /// Read a CAN frame from the remote interface.
@@ -542,26 +551,23 @@ impl CanBusSocket for RemoteCanSocket {
 
     fn write_raw(&self, can_id: u32, data: &[u8]) -> anyhow::Result<()> {
         let frame = CanFrame::new(can_id, data)?;
-        // Need mutable access, but trait requires &self for Send+Sync compatibility.
-        // We use interior mutability via the runtime's block_on.
         let encoded = wire::encode(&AnyCanFrame::Can(frame));
-        self.runtime.block_on(async {
-            match &self.client {
-                ClientInner::Iroh { send, .. } => {
-                    let mut s = send.lock().await;
-                    s.write_all(&encoded).await?;
-                    drop(s);
-                    // quinn's flush() is a no-op — yield to let connection task send
-                    tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-                }
-                ClientInner::Moq { conn } => {
+        match &self.client {
+            ClientInner::Iroh { write_tx, .. } => {
+                write_tx
+                    .blocking_send(encoded)
+                    .map_err(|_| anyhow::anyhow!("write channel closed"))?;
+            }
+            ClientInner::Moq { conn } => {
+                self.runtime.block_on(async {
                     let mut c = conn.lock().await;
                     let mut track = c.create_track("can");
                     track.write(encoded.to_vec());
-                }
+                    Ok::<_, anyhow::Error>(())
+                })?;
             }
-            Ok::<_, anyhow::Error>(())
-        })
+        }
+        Ok(())
     }
 
     fn read_raw(&self) -> anyhow::Result<Option<(u32, Vec<u8>)>> {

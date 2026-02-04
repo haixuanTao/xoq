@@ -273,8 +273,24 @@ impl SerialPortBuilder {
                 }
                 let conn = builder.connect_str(&self.port_name).await?;
                 let stream = conn.open_stream().await?;
+                let (send, recv) = stream.split();
+
+                // Spawn a background writer task on the runtime's thread pool.
+                // This ensures writes and the QUIC ConnectionDriver share the same
+                // async executor, so the driver gets polled promptly after each write.
+                let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+                tokio::spawn(async move {
+                    let mut send = send;
+                    while let Some(data) = write_rx.recv().await {
+                        if send.write_all(&data).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
                 Ok::<_, anyhow::Error>(ClientInner::Iroh {
-                    stream: Arc::new(Mutex::new(stream)),
+                    recv: Arc::new(Mutex::new(recv)),
+                    write_tx,
                     _conn: conn,
                 })
             })?,
@@ -305,7 +321,10 @@ impl SerialPortBuilder {
 /// Internal client representation supporting multiple transports.
 enum ClientInner {
     Iroh {
-        stream: Arc<Mutex<crate::iroh::IrohStream>>,
+        /// SendStream is owned by the background writer task.
+        /// RecvStream is used directly for reads.
+        recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
+        write_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
         _conn: IrohConnection,
     },
     Moq {
@@ -417,20 +436,21 @@ impl RemoteSerialPort {
 
     /// Write bytes to the remote serial port.
     pub fn write_bytes(&mut self, data: &[u8]) -> Result<usize> {
-        self.runtime.block_on(async {
-            match &self.client {
-                ClientInner::Iroh { stream, .. } => {
-                    let mut s = stream.lock().await;
-                    s.write(data).await?;
-                }
-                ClientInner::Moq { conn } => {
+        match &self.client {
+            ClientInner::Iroh { write_tx, .. } => {
+                write_tx
+                    .blocking_send(data.to_vec())
+                    .map_err(|_| anyhow::anyhow!("write channel closed"))?;
+            }
+            ClientInner::Moq { conn } => {
+                self.runtime.block_on(async {
                     let mut c = conn.lock().await;
                     let mut track = c.create_track("serial");
                     track.write(data.to_vec());
-                }
+                    Ok::<_, anyhow::Error>(())
+                })?;
             }
-            Ok::<_, anyhow::Error>(())
-        })?;
+        }
         Ok(data.len())
     }
 
@@ -449,9 +469,9 @@ impl RemoteSerialPort {
         let result = self.runtime.block_on(async {
             tokio::time::timeout(timeout, async {
                 match &self.client {
-                    ClientInner::Iroh { stream, .. } => {
-                        let mut s = stream.lock().await;
-                        s.read(buf).await
+                    ClientInner::Iroh { recv, .. } => {
+                        let mut r = recv.lock().await;
+                        Ok(r.read(buf).await?)
                     }
                     ClientInner::Moq { conn } => {
                         let mut c = conn.lock().await;

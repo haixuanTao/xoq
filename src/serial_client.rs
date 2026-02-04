@@ -15,8 +15,8 @@ use crate::iroh::IrohClientBuilder;
 /// This client manages its own tokio runtime internally,
 /// providing a simple blocking API.
 pub struct SyncSerialClient {
-    send: Arc<Mutex<iroh::endpoint::SendStream>>,
     recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
+    write_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     runtime: tokio::runtime::Runtime,
     _conn: crate::iroh::IrohConnection,
 }
@@ -26,16 +26,28 @@ impl SyncSerialClient {
     pub fn connect(server_id: &str) -> Result<Self> {
         let runtime = tokio::runtime::Runtime::new()?;
 
-        let (send, recv, conn) = runtime.block_on(async {
+        let (write_tx, recv, conn) = runtime.block_on(async {
             let conn = IrohClientBuilder::new().connect_str(server_id).await?;
             let stream = conn.open_stream().await?;
             let (send, recv) = stream.split();
-            Ok::<_, anyhow::Error>((send, recv, conn))
+
+            // Spawn background writer task so writes don't go through block_on
+            let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+            tokio::spawn(async move {
+                let mut send = send;
+                while let Some(data) = write_rx.recv().await {
+                    if send.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Ok::<_, anyhow::Error>((write_tx, recv, conn))
         })?;
 
         Ok(Self {
-            send: Arc::new(Mutex::new(send)),
             recv: Arc::new(Mutex::new(recv)),
+            write_tx,
             runtime,
             _conn: conn,
         })
@@ -43,14 +55,9 @@ impl SyncSerialClient {
 
     /// Write data to the remote serial port.
     pub fn write(&self, data: &[u8]) -> Result<()> {
-        self.runtime.block_on(async {
-            let mut send = self.send.lock().await;
-            send.write_all(data).await?;
-            drop(send);
-            // quinn's flush() is a no-op — yield to let connection task send
-            tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-            Ok(())
-        })
+        self.write_tx
+            .blocking_send(data.to_vec())
+            .map_err(|_| anyhow::anyhow!("write channel closed"))
     }
 
     /// Read data from the remote serial port.
