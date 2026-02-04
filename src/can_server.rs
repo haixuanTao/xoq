@@ -4,6 +4,7 @@
 //! connection tasks via channels.
 
 use anyhow::Result;
+use iroh::Watcher;
 use socketcan::Socket;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
