@@ -507,6 +507,7 @@ async fn handle_connection(
     // Network → CAN
     let mut buf = vec![0u8; 1024];
     let mut pending = Vec::new();
+    let mut last_net_read = Instant::now();
     let result = loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -518,6 +519,15 @@ async fn handle_connection(
             read_result = recv.read(&mut buf) => {
                 match read_result {
                     Ok(Some(n)) if n > 0 => {
+                        let net_gap = last_net_read.elapsed();
+                        if net_gap > Duration::from_millis(50) {
+                            tracing::warn!(
+                                "Net→CAN: {:.1}ms gap between QUIC reads ({} bytes)",
+                                net_gap.as_secs_f64() * 1000.0,
+                                n,
+                            );
+                        }
+                        last_net_read = Instant::now();
                         pending.extend_from_slice(&buf[..n]);
 
                         while pending.len() >= 6 {
