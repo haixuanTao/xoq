@@ -11,7 +11,7 @@ repository = "https://github.com/haixuantao/xoq"
 
 [features]
 default = []
-iroh = ["dep:iroh"]
+iroh = ["dep:iroh", "dep:iroh-quinn-proto"]
 image = ["dep:image"]
 # Server-side features (require hardware access)
 serial = ["dep:serialport"]
@@ -33,6 +33,7 @@ can-remote = ["iroh"]
 moq-transport = "0.12"
 moq-token = "0.5"
 iroh = { version = "0.95", optional = true }
+iroh-quinn-proto = { version = "0.13", optional = true }
 serialport = { version = "4", optional = true }
 v4l = { version = "0.14", optional = true }
 image = { version = "0.25", optional = true }

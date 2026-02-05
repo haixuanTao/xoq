@@ -6,9 +6,66 @@ use anyhow::Result;
 use iroh::endpoint::{AckFrequencyConfig, Connection, TransportConfig, VarInt};
 use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
+
+use iroh_quinn_proto::congestion;
+
+/// A no-op congestion controller that never limits sending.
+///
+/// Returns u64::MAX for the window, so poll_transmit is never blocked
+/// by congestion control. Use on trusted LANs where packet loss is
+/// rare and latency matters more than fairness.
+struct NoopController {
+    mtu: u16,
+}
+
+impl congestion::Controller for NoopController {
+    fn on_congestion_event(
+        &mut self,
+        _now: std::time::Instant,
+        _sent: std::time::Instant,
+        _is_persistent_congestion: bool,
+        _lost_bytes: u64,
+    ) {
+        // Ignore loss events — don't reduce the window
+    }
+
+    fn on_mtu_update(&mut self, new_mtu: u16) {
+        self.mtu = new_mtu;
+    }
+
+    fn window(&self) -> u64 {
+        u64::MAX
+    }
+
+    fn clone_box(&self) -> Box<dyn congestion::Controller> {
+        Box::new(NoopController { mtu: self.mtu })
+    }
+
+    fn initial_window(&self) -> u64 {
+        u64::MAX
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
+    }
+}
+
+/// Factory that produces [`NoopController`] instances.
+struct NoopControllerFactory;
+
+impl congestion::ControllerFactory for NoopControllerFactory {
+    fn build(
+        self: Arc<Self>,
+        _now: std::time::Instant,
+        current_mtu: u16,
+    ) -> Box<dyn congestion::Controller> {
+        Box::new(NoopController { mtu: current_mtu })
+    }
+}
 
 /// Create a low-latency QUIC transport config for robotics use.
 ///
@@ -26,6 +83,10 @@ fn low_latency_transport_config() -> TransportConfig {
     ack_freq.ack_eliciting_threshold(VarInt::from_u32(0));
     ack_freq.max_ack_delay(Some(Duration::from_millis(1)));
     config.ack_frequency_config(Some(ack_freq));
+
+    // Disable congestion control — never block poll_transmit due to cwnd.
+    // Safe on trusted LANs; avoids 100-200ms stalls when a single packet is lost.
+    config.congestion_controller_factory(Arc::new(NoopControllerFactory));
 
     config
 }
