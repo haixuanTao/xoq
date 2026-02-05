@@ -6873,6 +6873,7 @@ dependencies = [
  "dispatch",
  "image",
  "iroh",
+ "iroh-quinn-proto",
  "libc",
  "moq-native",
  "moq-token",
