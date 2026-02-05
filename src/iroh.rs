@@ -89,6 +89,10 @@ fn low_latency_transport_config() -> TransportConfig {
     // Safe on trusted LANs; avoids 100-200ms stalls when a single packet is lost.
     config.congestion_controller_factory(Arc::new(NoopControllerFactory));
 
+    // Disable GSO (Generic Segmentation Offload) so each QUIC packet is sent as
+    // its own UDP datagram immediately, rather than coalescing up to 10 packets.
+    config.enable_segmentation_offload(false);
+
     config
 }
 
