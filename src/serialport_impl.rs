@@ -317,28 +317,10 @@ impl SerialPortBuilder {
                     use_datagrams,
                 })
             })?,
-            Transport::Moq { relay, token } => runtime.block_on(async {
-                let mut builder = crate::moq::MoqBuilder::new()
-                    .relay(&relay)
-                    .path(&self.port_name);
-                if let Some(t) = token {
-                    builder = builder.token(&t);
-                }
-                let mut conn = builder.connect_duplex().await?;
-
-                // Create tracks once at setup (like moq_serial_client example)
-                let writer = conn.create_track("serial-in");
-                tracing::info!("MoQ: publishing on track 'serial-in'");
-
-                let reader = conn.subscribe_track("serial-out").await?.ok_or_else(|| {
-                    anyhow::anyhow!("MoQ: failed to subscribe to 'serial-out' track")
-                })?;
-                tracing::info!("MoQ: subscribed to track 'serial-out'");
-
+            Transport::Moq { relay, token: _ } => runtime.block_on(async {
+                let stream = crate::moq::MoqStream::connect_to(&relay, &self.port_name).await?;
                 Ok::<_, anyhow::Error>(ClientInner::Moq {
-                    writer: Arc::new(Mutex::new(writer)),
-                    reader: Arc::new(Mutex::new(reader)),
-                    _conn: conn,
+                    stream: Arc::new(Mutex::new(stream)),
                 })
             })?,
         };
@@ -361,9 +343,7 @@ enum ClientInner {
         use_datagrams: bool,
     },
     Moq {
-        writer: Arc<Mutex<crate::moq::MoqTrackWriter>>,
-        reader: Arc<Mutex<crate::moq::MoqTrackReader>>,
-        _conn: crate::moq::MoqConnection,
+        stream: Arc<Mutex<crate::moq::MoqStream>>,
     },
 }
 
@@ -485,9 +465,9 @@ impl RemoteSerialPort {
                         s.write(data).await?;
                     }
                 }
-                ClientInner::Moq { writer, .. } => {
-                    let mut w = writer.lock().await;
-                    w.write(data.to_vec());
+                ClientInner::Moq { stream } => {
+                    let mut s = stream.lock().await;
+                    s.write(data.to_vec());
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -514,9 +494,9 @@ impl RemoteSerialPort {
                         let mut s = stream.lock().await;
                         s.read(buf).await
                     }
-                    ClientInner::Moq { reader, .. } => {
-                        let mut r = reader.lock().await;
-                        if let Some(data) = r.read().await? {
+                    ClientInner::Moq { stream } => {
+                        let mut s = stream.lock().await;
+                        if let Some(data) = s.read().await? {
                             let n = std::cmp::min(data.len(), buf.len());
                             buf[..n].copy_from_slice(&data[..n]);
                             Ok(Some(n))

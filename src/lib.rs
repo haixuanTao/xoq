@@ -159,7 +159,8 @@ pub mod socketcan {
 
 // Re-export commonly used types
 pub use moq::{
-    MoqBuilder, MoqConnection, MoqPublisher, MoqSubscriber, MoqTrackReader, MoqTrackWriter,
+    MoqBuilder, MoqConnection, MoqPublisher, MoqStream, MoqSubscriber, MoqTrackReader,
+    MoqTrackWriter,
 };
 
 #[cfg(feature = "iroh")]

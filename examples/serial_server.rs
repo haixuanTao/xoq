@@ -5,7 +5,6 @@
 //! Example: serial_server /dev/ttyUSB0 1000000 --moq anon/xoq-test
 
 use anyhow::Result;
-use moq_native::moq_lite;
 use std::env;
 use std::time::{Duration, Instant};
 
@@ -66,80 +65,65 @@ async fn run_moq_server(port_name: &str, baud_rate: u32, moq_path: &str) -> Resu
 
     tracing::info!("Serial port opened: {} @ {} baud", port_name, baud_rate);
 
-    // Connect to MoQ relay as duplex
+    // Connect via MoqStream (waits for client, no timeout)
     tracing::info!("Connecting to MoQ relay at path '{}'...", moq_path);
-    let mut conn = xoq::MoqBuilder::new()
-        .path(moq_path)
-        .connect_duplex()
-        .await?;
+    let stream = xoq::MoqStream::accept(moq_path).await?;
+    tracing::info!("Client connected!");
 
-    tracing::info!("Connected to MoQ relay");
+    // Split for concurrent read/write from different tasks
+    let (mut moq_writer, mut moq_reader, _conn) = stream.split();
 
-    // Create track for serial -> network (server publishes serial data)
-    let mut serial_out_track = conn.create_track("serial-out");
-    tracing::info!("Publishing on track 'serial-out'");
-    tracing::info!("Server ready. Waiting for client to connect...");
-
-    // Spawn task: serial -> network (starts immediately, no need to wait for client)
-    let _serial_to_net = tokio::spawn(async move {
-        let mut buf = [0u8; 1024];
+    // Spawn task: network -> serial
+    let net_to_serial = tokio::spawn(async move {
+        let mut last_recv = Instant::now();
         loop {
-            match reader.read(&mut buf).await {
-                Ok(0) => {
-                    tokio::task::yield_now().await;
+            match moq_reader.read().await {
+                Ok(Some(data)) => {
+                    let gap = last_recv.elapsed();
+                    if gap > Duration::from_millis(50) {
+                        tracing::warn!(
+                            "MoQ Net→Serial: {:.1}ms gap ({} bytes)",
+                            gap.as_secs_f64() * 1000.0,
+                            data.len(),
+                        );
+                    }
+                    last_recv = Instant::now();
+                    tracing::debug!("MoQ Net→Serial: {} bytes", data.len());
+                    if let Err(e) = writer.write_all(&data).await {
+                        tracing::error!("Serial write error: {}", e);
+                        break;
+                    }
                 }
-                Ok(n) => {
-                    tracing::debug!("Serial→MoQ: {} bytes", n);
-                    serial_out_track.write(buf[..n].to_vec());
+                Ok(None) => {
+                    tracing::info!("MoQ stream ended");
+                    break;
                 }
                 Err(e) => {
-                    tracing::error!("Serial read error: {}", e);
+                    tracing::error!("MoQ read error: {}", e);
                     break;
                 }
             }
         }
     });
 
-    // Main task: wait for client's "serial-in" track, then forward network -> serial.
-    // Poll consume_broadcast instead of using announced() (relay may not relay announcements).
-    let origin = conn.subscribe_origin();
+    // Main task: serial -> network
+    let mut buf = [0u8; 1024];
     loop {
-        if let Some(broadcast) = origin.consume_broadcast("") {
-            tracing::info!("Client connected! Subscribing to 'serial-in'");
-            let track_info = moq_lite::Track {
-                name: "serial-in".to_string(),
-                priority: 0,
-            };
-            let mut track = broadcast.subscribe_track(&track_info);
-
-            let mut last_recv = Instant::now();
-            loop {
-                if let Ok(Some(mut group)) = track.next_group().await {
-                    if let Ok(Some(data)) = group.read_frame().await {
-                        let gap = last_recv.elapsed();
-                        if gap > Duration::from_millis(50) {
-                            tracing::warn!(
-                                "MoQ Net→Serial: {:.1}ms gap ({} bytes)",
-                                gap.as_secs_f64() * 1000.0,
-                                data.len(),
-                            );
-                        }
-                        last_recv = Instant::now();
-                        tracing::debug!("MoQ Net→Serial: {} bytes", data.len());
-                        if let Err(e) = writer.write_all(&data).await {
-                            tracing::error!("Serial write error: {}", e);
-                            break;
-                        }
-                    }
-                } else {
-                    tracing::info!("MoQ serial-in track ended, waiting for new client...");
-                    break;
-                }
+        match reader.read(&mut buf).await {
+            Ok(0) => {
+                tokio::task::yield_now().await;
+            }
+            Ok(n) => {
+                tracing::debug!("Serial→MoQ: {} bytes", n);
+                moq_writer.write(buf[..n].to_vec());
+            }
+            Err(e) => {
+                tracing::error!("Serial read error: {}", e);
+                break;
             }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    #[allow(unreachable_code)]
+    net_to_serial.abort();
     Ok(())
 }

@@ -321,3 +321,155 @@ impl MoqTrackReader {
         Ok(None)
     }
 }
+
+/// A simple bidirectional stream over MoQ.
+///
+/// Hides the track/broadcast/announcement complexity behind a simple
+/// `write()`/`read()` interface. Uses two MoQ tracks internally (one per direction).
+///
+/// # Example
+///
+/// ```no_run
+/// # async fn example() -> anyhow::Result<()> {
+/// use xoq::MoqStream;
+///
+/// // Server side:
+/// let mut stream = MoqStream::accept("anon/xoq-test").await?;
+///
+/// // Client side:
+/// let mut stream = MoqStream::connect("anon/xoq-test").await?;
+///
+/// // Both sides:
+/// stream.write(b"hello");
+/// let data = stream.read().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct MoqStream {
+    writer: MoqTrackWriter,
+    reader: MoqTrackReader,
+    _conn: MoqConnection,
+}
+
+impl MoqStream {
+    /// Connect as client. Publishes "data-up", subscribes to "data-down".
+    pub async fn connect(path: &str) -> Result<Self> {
+        Self::connect_to("https://cdn.moq.dev", path).await
+    }
+
+    /// Connect as client to a specific relay.
+    pub async fn connect_to(relay: &str, path: &str) -> Result<Self> {
+        let mut conn = MoqBuilder::new()
+            .relay(relay)
+            .path(path)
+            .connect_duplex()
+            .await?;
+
+        // Publish our track first, then subscribe.
+        // The server waits for our announcement before publishing its own,
+        // so our track must be announced first.
+        let writer = conn.create_track("data-up");
+        tracing::info!("MoqStream client: publishing 'data-up'");
+
+        tracing::info!("MoqStream client: waiting for 'data-down'...");
+        let reader = Self::wait_for_track(&mut conn.subscribe_origin, "data-down").await?;
+        tracing::info!("MoqStream client: connected");
+
+        Ok(Self {
+            writer,
+            reader,
+            _conn: conn,
+        })
+    }
+
+    /// Accept as server. Publishes "data-down", subscribes to "data-up".
+    ///
+    /// Waits for a client to connect (no timeout).
+    pub async fn accept(path: &str) -> Result<Self> {
+        Self::accept_at("https://cdn.moq.dev", path).await
+    }
+
+    /// Accept as server at a specific relay.
+    pub async fn accept_at(relay: &str, path: &str) -> Result<Self> {
+        let mut conn = MoqBuilder::new()
+            .relay(relay)
+            .path(path)
+            .connect_duplex()
+            .await?;
+
+        // Wait for client's track FIRST (no timeout — server waits forever).
+        // This ensures we're subscribed before the client publishes,
+        // so the relay forwards the announcement to us.
+        tracing::info!("MoqStream server: waiting for client 'data-up'...");
+        let reader = Self::wait_for_track(&mut conn.subscribe_origin, "data-up").await?;
+        tracing::info!("MoqStream server: client connected");
+
+        // Now publish our track — client is already subscribed and waiting.
+        let writer = conn.create_track("data-down");
+        tracing::info!("MoqStream server: publishing 'data-down'");
+
+        Ok(Self {
+            writer,
+            reader,
+            _conn: conn,
+        })
+    }
+
+    /// Wait for a track via announced() (no timeout).
+    async fn wait_for_track(
+        origin: &mut moq_lite::OriginConsumer,
+        track_name: &str,
+    ) -> Result<MoqTrackReader> {
+        loop {
+            // Try consume_broadcast first (instant, for already-announced tracks)
+            if let Some(broadcast) = origin.consume_broadcast("") {
+                let track_info = moq_lite::Track {
+                    name: track_name.to_string(),
+                    priority: 0,
+                };
+                let track = broadcast.subscribe_track(&track_info);
+                return Ok(MoqTrackReader { track });
+            }
+
+            // Wait for announcement from relay (signals interest to relay)
+            match tokio::time::timeout(Duration::from_secs(2), origin.announced()).await {
+                Ok(Some((_path, Some(broadcast)))) => {
+                    tracing::info!("Received broadcast, subscribing to '{}'", track_name);
+                    let track_info = moq_lite::Track {
+                        name: track_name.to_string(),
+                        priority: 0,
+                    };
+                    let track = broadcast.subscribe_track(&track_info);
+                    return Ok(MoqTrackReader { track });
+                }
+                Ok(Some((_path, None))) => {
+                    tracing::debug!("Broadcast announcement with no consumer, retrying...");
+                }
+                Ok(None) => {
+                    tracing::debug!("Announcement stream ended, retrying...");
+                }
+                Err(_) => {
+                    tracing::debug!("No announcement for '{}' in 2s, retrying...", track_name);
+                }
+            }
+        }
+    }
+
+    /// Split into writer, reader, and connection handle.
+    ///
+    /// Use this when you need concurrent read/write from different tasks.
+    /// The connection handle must be kept alive.
+    pub fn split(self) -> (MoqTrackWriter, MoqTrackReader, MoqConnection) {
+        (self.writer, self.reader, self._conn)
+    }
+
+    /// Write data.
+    pub fn write(&mut self, data: impl Into<Bytes>) {
+        self.writer.write(data);
+    }
+
+    /// Read the next frame.
+    pub async fn read(&mut self) -> Result<Option<Bytes>> {
+        self.reader.read().await
+    }
+}
