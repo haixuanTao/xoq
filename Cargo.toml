@@ -39,7 +39,12 @@ v4l = { version = "0.14", optional = true }
 image = { version = "0.25", optional = true }
 socketcan = { version = "3.5", optional = true }
 libc = { version = "0.2", optional = true }
-moq-native = "0.12"
+moq-native = { version = "0.12", default-features = false, features = ["ring"] }
+web-transport-quinn = "0.3"
+web-transport = "0.3"
+quinn = { version = "0.11", features = ["ring"] }
+rustls = { version = "0.23", features = ["ring"] }
+webpki-roots = "0.26"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 anyhow = "1"
@@ -88,6 +93,11 @@ path = "examples/so100_teleop.rs"
 required-features = ["iroh", "serial"]
 
 [[example]]
+name = "reachy_mini"
+path = "examples/reachy_mini.rs"
+required-features = ["iroh", "serial"]
+
+[[example]]
 name = "can_server"
 path = "examples/can_server.rs"
 required-features = ["iroh", "can"]
@@ -103,6 +113,16 @@ path = "examples/camera_server.rs"
 required-features = ["iroh"]
 
 [[example]]
+name = "camera_client"
+path = "examples/camera_client.rs"
+required-features = ["camera-remote"]
+
+[[example]]
+name = "moq_can_server"
+path = "examples/moq_can_server.rs"
+required-features = ["can"]
+
+[[example]]
 name = "moq_serial_server"
 path = "examples/moq_serial_server.rs"
 required-features = ["serial"]
@@ -114,3 +134,9 @@ path = "examples/moq_serial_client.rs"
 [[example]]
 name = "moq_test"
 path = "examples/moq_test.rs"
+
+[[example]]
+name = "iroh_latency_test"
+path = "examples/iroh_latency_test.rs"
+required-features = ["iroh"]
+
