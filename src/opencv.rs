@@ -137,7 +137,7 @@ fn annex_b_to_avcc(data: &[u8]) -> (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>) {
 
 /// Parse a CMAF init segment to extract SPS, PPS, width, and height from the avcC box.
 #[cfg_attr(
-    not(any(feature = "videotoolbox", feature = "nvenc")),
+    not(any(feature = "videotoolbox", feature = "nvenc", feature = "openh264")),
     allow(dead_code)
 )]
 fn parse_cmaf_init_segment(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, u32, u32)> {
@@ -269,7 +269,7 @@ fn parse_avcc_box(data: &[u8]) -> Option<(Vec<u8>, Vec<u8>, u32, u32)> {
 /// Parse a CMAF media segment to extract NAL unit data from the mdat box.
 /// Returns raw NAL unit byte vectors (without length prefixes).
 #[cfg_attr(
-    not(any(feature = "videotoolbox", feature = "nvenc")),
+    not(any(feature = "videotoolbox", feature = "nvenc", feature = "openh264")),
     allow(dead_code)
 )]
 fn parse_cmaf_media_segment(data: &[u8]) -> Result<Vec<Vec<u8>>> {
@@ -450,7 +450,7 @@ impl CameraClientBuilder {
                     let (_send, recv) = stream.split();
 
                     // Create decoder if H.264
-                    #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                    #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                     let decoder = if encoding == StreamEncoding::H264 {
                         Some(Arc::new(Mutex::new(H264Decoder::new()?)))
                     } else {
@@ -461,7 +461,11 @@ impl CameraClientBuilder {
                         recv: Arc::new(Mutex::new(recv)),
                         _conn: conn,
                         encoding,
-                        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                        #[cfg(any(
+                            feature = "nvenc",
+                            feature = "videotoolbox",
+                            feature = "openh264"
+                        ))]
                         decoder,
                     });
                 }
@@ -525,20 +529,20 @@ impl CameraClientBuilder {
         };
 
         // Create decoder lazily for H.264 (from init segment's SPS/PPS)
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         let decoder = None;
 
         Ok(CameraClientInner::Moq {
             track,
             _conn: conn,
             encoding,
-            #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+            #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
             decoder,
-            #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+            #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
             cmaf_initialized: false,
-            #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+            #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
             cmaf_width: 0,
-            #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+            #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
             cmaf_height: 0,
         })
     }
@@ -555,20 +559,20 @@ enum CameraClientInner {
         recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
         _conn: crate::iroh::IrohConnection,
         encoding: StreamEncoding,
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         decoder: Option<Arc<Mutex<H264Decoder>>>,
     },
     Moq {
         track: crate::moq::MoqTrackReader,
         _conn: crate::moq::MoqSubscriber,
         encoding: StreamEncoding,
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         decoder: Option<Arc<Mutex<H264Decoder>>>,
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         cmaf_initialized: bool,
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         cmaf_width: u32,
-        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+        #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
         cmaf_height: u32,
     },
 }
@@ -598,7 +602,7 @@ impl CameraClient {
             CameraClientInner::Iroh {
                 recv,
                 encoding,
-                #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                 decoder,
                 ..
             } => {
@@ -632,7 +636,11 @@ impl CameraClient {
                         frame
                     }
                     StreamEncoding::H264 => {
-                        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                        #[cfg(any(
+                            feature = "nvenc",
+                            feature = "videotoolbox",
+                            feature = "openh264"
+                        ))]
                         {
                             if let Some(decoder) = decoder {
                                 let mut dec = decoder.lock().await;
@@ -641,9 +649,15 @@ impl CameraClient {
                                 anyhow::bail!("H.264 stream but no decoder available");
                             }
                         }
-                        #[cfg(not(any(feature = "nvenc", feature = "videotoolbox")))]
+                        #[cfg(not(any(
+                            feature = "nvenc",
+                            feature = "videotoolbox",
+                            feature = "openh264"
+                        )))]
                         {
-                            anyhow::bail!("H.264 decoding requires nvenc or videotoolbox feature");
+                            anyhow::bail!(
+                                "H.264 decoding requires nvenc, videotoolbox, or openh264 feature"
+                            );
                         }
                     }
                 };
@@ -664,13 +678,13 @@ impl CameraClient {
             CameraClientInner::Moq {
                 track,
                 encoding,
-                #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                 decoder,
-                #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                 cmaf_initialized,
-                #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                 cmaf_width,
-                #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                #[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
                 cmaf_height,
                 ..
             } => {
@@ -716,7 +730,11 @@ impl CameraClient {
                         Ok(frame)
                     }
                     StreamEncoding::H264 => {
-                        #[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+                        #[cfg(any(
+                            feature = "nvenc",
+                            feature = "videotoolbox",
+                            feature = "openh264"
+                        ))]
                         {
                             // CMAF H.264 over MoQ
                             let mut cmaf_reads = 0u64;
@@ -834,9 +852,15 @@ impl CameraClient {
                                 }
                             }
                         }
-                        #[cfg(not(any(feature = "nvenc", feature = "videotoolbox")))]
+                        #[cfg(not(any(
+                            feature = "nvenc",
+                            feature = "videotoolbox",
+                            feature = "openh264"
+                        )))]
                         {
-                            anyhow::bail!("H.264 decoding requires nvenc or videotoolbox feature");
+                            anyhow::bail!(
+                                "H.264 decoding requires nvenc, videotoolbox, or openh264 feature"
+                            );
                         }
                     }
                 }
@@ -1668,18 +1692,63 @@ mod vtdec {
 pub use vtdec::VtDecoder;
 
 // ============================================================================
-// H264Decoder - Unifying enum for hardware decoders
+// OpenH264 Software Decoder (cross-platform)
 // ============================================================================
 
-#[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+#[cfg(feature = "openh264")]
+mod swdec {
+    use super::*;
+    use openh264::formats::YUVSource;
+
+    pub struct OpenH264Decoder {
+        decoder: openh264::decoder::Decoder,
+    }
+
+    impl OpenH264Decoder {
+        pub fn new() -> Result<Self> {
+            let decoder = openh264::decoder::Decoder::new()?;
+            Ok(Self { decoder })
+        }
+
+        pub fn decode(
+            &mut self,
+            h264_data: &[u8],
+            _width: u32,
+            _height: u32,
+            timestamp: u64,
+        ) -> Result<Frame> {
+            let yuv = self
+                .decoder
+                .decode(h264_data)?
+                .ok_or_else(|| anyhow::anyhow!("No frame decoded"))?;
+            let (w, h) = yuv.dimensions();
+            let mut rgb = vec![0u8; w * h * 3];
+            yuv.write_rgb8(&mut rgb);
+            Ok(Frame {
+                width: w as u32,
+                height: h as u32,
+                data: rgb,
+                timestamp_us: timestamp,
+            })
+        }
+    }
+}
+
+// ============================================================================
+// H264Decoder - Unifying enum for decoders
+// ============================================================================
+
+#[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
 enum H264Decoder {
     #[cfg(feature = "nvenc")]
     Nvdec(NvdecDecoder),
     #[cfg(feature = "videotoolbox")]
     VideoToolbox(VtDecoder),
+    #[cfg(feature = "openh264")]
+    Software(swdec::OpenH264Decoder),
 }
 
-#[cfg(any(feature = "nvenc", feature = "videotoolbox"))]
+#[cfg(any(feature = "nvenc", feature = "videotoolbox", feature = "openh264"))]
 impl H264Decoder {
     fn new() -> Result<Self> {
         #[cfg(feature = "nvenc")]
@@ -1690,6 +1759,14 @@ impl H264Decoder {
         {
             return Ok(H264Decoder::VideoToolbox(VtDecoder::new()?));
         }
+        #[cfg(all(
+            feature = "openh264",
+            not(feature = "nvenc"),
+            not(feature = "videotoolbox")
+        ))]
+        {
+            return Ok(H264Decoder::Software(swdec::OpenH264Decoder::new()?));
+        }
     }
 
     fn decode(&mut self, data: &[u8], width: u32, height: u32, timestamp: u64) -> Result<Frame> {
@@ -1698,6 +1775,8 @@ impl H264Decoder {
             H264Decoder::Nvdec(dec) => dec.decode(data, width, height, timestamp),
             #[cfg(feature = "videotoolbox")]
             H264Decoder::VideoToolbox(dec) => dec.decode(data, width, height, timestamp),
+            #[cfg(feature = "openh264")]
+            H264Decoder::Software(dec) => dec.decode(data, width, height, timestamp),
         }
     }
 }

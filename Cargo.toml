@@ -22,6 +22,7 @@ camera-macos = ["image", "dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foun
 # macOS H.264 encoding (VideoToolbox) - implies camera-macos
 vtenc = ["camera-macos", "dep:video-toolbox-sys", "dep:core-foundation", "dep:core-foundation-sys", "dep:core-media-sys", "dep:libc"]
 videotoolbox = ["camera-remote", "dep:video-toolbox-sys", "dep:core-foundation", "dep:core-foundation-sys", "dep:core-media-sys", "dep:libc"]
+openh264 = ["dep:openh264"]
 # Local CAN support (Linux only, requires socketcan)
 can = ["dep:socketcan", "dep:libc"]
 # Audio support (requires cpal for local audio I/O)
@@ -68,6 +69,8 @@ objc2-foundation = { version = "0.3", optional = true, features = ["NSString", "
 objc2-av-foundation = { version = "0.3", optional = true, features = ["AVCaptureDevice", "AVCaptureSession", "AVCaptureInput", "AVCaptureOutput", "AVMediaFormat"] }
 block2 = { version = "0.6", optional = true }
 dispatch = { version = "0.2", optional = true }
+# Software H.264 decoder (cross-platform, no GPU required)
+openh264 = { version = "0.6", features = ["source"], optional = true }
 # Hardware video encoding/decoding - macOS VideoToolbox (optional)
 video-toolbox-sys = { git = "https://github.com/haixuantao/video-toolbox-sys", optional = true }
 core-foundation = { version = "0.9", optional = true }
