@@ -160,13 +160,14 @@ impl IrohServerBuilder {
         let endpoint = Endpoint::builder()
             .alpns(vec![self.alpn])
             .secret_key(secret_key)
-            .relay_mode(RelayMode::Disabled)
+            .relay_mode(RelayMode::Default)
             .transport_config(low_latency_transport_config())
             .bind()
             .await?;
 
-        tracing::info!("Iroh server: relay DISABLED, low-latency transport config active");
-        // Don't call endpoint.online() — it waits for home relay which won't exist
+        // Wait for relay registration so remote clients can discover us via NAT traversal
+        endpoint.online().await;
+        tracing::info!("Iroh server: relay enabled, low-latency transport config active");
 
         Ok(IrohServer { endpoint })
     }
@@ -200,12 +201,12 @@ impl IrohClientBuilder {
     /// Connect to a server by endpoint ID
     pub async fn connect(self, server_id: PublicKey) -> Result<IrohConnection> {
         let endpoint = Endpoint::builder()
-            .relay_mode(RelayMode::Disabled)
+            .relay_mode(RelayMode::Default)
             .transport_config(low_latency_transport_config())
             .bind()
             .await?;
 
-        tracing::info!("Iroh client: relay DISABLED, low-latency transport config active");
+        tracing::info!("Iroh client: relay enabled, low-latency transport config active");
 
         let addr = EndpointAddr::from(server_id);
         let conn = endpoint.connect(addr, &self.alpn).await?;

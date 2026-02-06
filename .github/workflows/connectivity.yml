@@ -1,0 +1,116 @@
+name: Hardware Connectivity
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 6 hours
+    - cron: '0 */6 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  connectivity:
+    name: Hardware Connectivity Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: connectivity
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev
+
+      - name: Install Python tools
+        run: pip install maturin pytest pytest-timeout numpy
+
+      - name: Build xoq-serial
+        working-directory: packages/serial
+        run: maturin develop --release
+
+      - name: Build xoq-opencv
+        working-directory: packages/cv2
+        run: maturin develop --release --no-default-features
+
+      - name: Build xoq-can
+        working-directory: packages/can
+        run: maturin develop --release
+
+      # Run each test class separately so one failure doesn't block others
+      - name: Test serial connectivity
+        id: test_serial
+        if: always()
+        continue-on-error: true
+        env:
+          XOQ_SERIAL_SERVER_ID: ${{ secrets.XOQ_SERIAL_SERVER_ID }}
+        run: pytest tests/test_connectivity.py::TestSerialConnectivity -v
+
+      - name: Test camera connectivity
+        id: test_camera
+        if: always()
+        continue-on-error: true
+        env:
+          XOQ_CAMERA_SERVER_ID: ${{ secrets.XOQ_CAMERA_SERVER_ID }}
+        run: pytest tests/test_connectivity.py::TestCameraConnectivity -v
+
+      - name: Test CAN connectivity
+        id: test_can
+        if: always()
+        continue-on-error: true
+        env:
+          XOQ_CAN_SERVER_ID: ${{ secrets.XOQ_CAN_SERVER_ID }}
+        run: pytest tests/test_connectivity.py::TestCanConnectivity -v
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Hardware Connectivity Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Server | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+
+          serial_status="${{ steps.test_serial.outcome }}"
+          camera_status="${{ steps.test_camera.outcome }}"
+          can_status="${{ steps.test_can.outcome }}"
+
+          [ "$serial_status" = "success" ] && echo "| Serial (SO100) | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY || echo "| Serial (SO100) | :x: $serial_status |" >> $GITHUB_STEP_SUMMARY
+          [ "$camera_status" = "success" ] && echo "| Camera | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY || echo "| Camera | :x: $camera_status |" >> $GITHUB_STEP_SUMMARY
+          [ "$can_status" = "success" ] && echo "| CAN (openarm) | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY || echo "| CAN (openarm) | :x: $can_status |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check results
+        if: always()
+        run: |
+          # Count configured tests (secret is set) and failures
+          configured=0
+          passed=0
+
+          if [ -n "${{ secrets.XOQ_SERIAL_SERVER_ID }}" ]; then
+            configured=$((configured + 1))
+            [ "${{ steps.test_serial.outcome }}" = "success" ] && passed=$((passed + 1))
+          fi
+          if [ -n "${{ secrets.XOQ_CAMERA_SERVER_ID }}" ]; then
+            configured=$((configured + 1))
+            [ "${{ steps.test_camera.outcome }}" = "success" ] && passed=$((passed + 1))
+          fi
+          if [ -n "${{ secrets.XOQ_CAN_SERVER_ID }}" ]; then
+            configured=$((configured + 1))
+            [ "${{ steps.test_can.outcome }}" = "success" ] && passed=$((passed + 1))
+          fi
+
+          echo "Configured: $configured, Passed: $passed"
+
+          # Fail only if ALL configured tests failed (and at least one was configured)
+          if [ "$configured" -gt 0 ] && [ "$passed" -eq 0 ]; then
+            echo "All configured connectivity tests failed!"
+            exit 1
+          fi
