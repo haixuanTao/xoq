@@ -129,10 +129,16 @@ class _SerialFinder(importlib.abc.MetaPathFinder):
 
         # Try the real pyserial first
         spec = importlib.util.find_spec("serial")
-        if spec is not None:
+        if spec is not None and spec.loader is not None:
             # Wrap the loader to patch after loading
             original_loader = spec.loader
             spec.loader = _PatchingLoader(original_loader)
+            return spec
+
+        if spec is not None:
+            # Namespace package (loader is None) — let it load normally
+            # and register a post-import hook to patch it
+            _PostImportPatcher.install()
             return spec
 
         # pyserial not installed — provide synthetic module from xoq_serial
@@ -141,6 +147,23 @@ class _SerialFinder(importlib.abc.MetaPathFinder):
             _SyntheticSerialLoader(),
             origin="xoq_serial",
         )
+
+
+class _PostImportPatcher(importlib.abc.MetaPathFinder):
+    """Patches serial after it finishes loading (for namespace packages)."""
+
+    @classmethod
+    def install(cls):
+        if not any(isinstance(f, cls) for f in sys.meta_path):
+            sys.meta_path.append(cls())
+
+    def find_module(self, fullname, path=None):
+        if fullname.startswith("serial") and "serial" in sys.modules:
+            mod = sys.modules["serial"]
+            if hasattr(mod, "Serial") and not isinstance(getattr(mod, "Serial", None), _XoqSerialType):
+                _patch_serial(mod)
+            sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
+        return None
 
 
 class _PatchingLoader:
