@@ -10,6 +10,7 @@ Environment variables:
     XOQ_SERIAL_SERVER_ID: Iroh endpoint ID of the serial server (SO100)
     XOQ_CAMERA_SERVER_ID: Iroh endpoint ID of the camera server
     XOQ_CAN_SERVER_ID:    Iroh endpoint ID of the CAN server (openarm)
+    XOQ_AUDIO_SERVER_ID:  Iroh endpoint ID of the audio server
 """
 
 import os
@@ -19,6 +20,7 @@ import pytest
 SERIAL_SERVER_ID = os.environ.get("XOQ_SERIAL_SERVER_ID")
 CAMERA_SERVER_ID = os.environ.get("XOQ_CAMERA_SERVER_ID")
 CAN_SERVER_ID = os.environ.get("XOQ_CAN_SERVER_ID")
+AUDIO_SERVER_ID = os.environ.get("XOQ_AUDIO_SERVER_ID")
 
 
 @pytest.mark.skipif(not SERIAL_SERVER_ID, reason="XOQ_SERIAL_SERVER_ID not set")
@@ -97,3 +99,30 @@ class TestCanConnectivity:
             assert msg is None or isinstance(msg, xoq_can.Message)
         finally:
             bus.shutdown()
+
+
+@pytest.mark.skipif(not AUDIO_SERVER_ID, reason="XOQ_AUDIO_SERVER_ID not set")
+class TestAudioConnectivity:
+    """Test audio server reachability via Iroh relay."""
+
+    @pytest.mark.timeout(60)
+    def test_audio_connect(self):
+        import xoq_sounddevice
+
+        stream = xoq_sounddevice.Stream(AUDIO_SERVER_ID, samplerate=48000, channels=1)
+        assert stream.is_active
+        stream.stop()
+
+    @pytest.mark.timeout(60)
+    def test_audio_read(self):
+        import xoq_sounddevice
+        import numpy as np
+
+        stream = xoq_sounddevice.Stream(AUDIO_SERVER_ID, samplerate=48000, channels=1)
+        try:
+            # Read 960 frames (20ms @ 48kHz)
+            data = stream.read(960)
+            assert isinstance(data, np.ndarray)
+            assert data.shape == (960, 1)
+        finally:
+            stream.stop()
