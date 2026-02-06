@@ -3,6 +3,10 @@
 Installed via ``xoq_can_hook.pth`` so it runs automatically at interpreter
 startup.  After the hook fires once it removes itself from
 ``sys.meta_path`` — zero overhead for subsequent imports.
+
+When python-can is installed, ``import can`` loads the real package and patches
+Bus with a metaclass dispatcher.  When python-can is NOT installed,
+``import can`` creates a synthetic module backed entirely by xoq_can.
 """
 
 import importlib
@@ -11,6 +15,7 @@ import importlib.machinery
 import importlib.util
 import re
 import sys
+import types
 
 
 # Pattern for iroh node IDs (64-char hex-encoded ed25519 public keys)
@@ -21,6 +26,16 @@ def _is_remote_channel(channel):
     """Return True if *channel* looks like a remote CAN bus identifier."""
     s = str(channel) if channel is not None else ""
     return bool(_IROH_ID_RE.match(s))
+
+
+class _MissingPythonCan:
+    """Placeholder for python-can's Bus when python-can is not installed."""
+
+    def __init__(self, *args, **kwargs):
+        raise ImportError(
+            "python-can is not installed. Install it with: pip install python-can\n"
+            "Only remote CAN buses (64-char hex iroh IDs) work without python-can."
+        )
 
 
 class _XoqBusType(type):
@@ -45,7 +60,7 @@ class _XoqBusType(type):
 
 
 class _XoqBus(metaclass=_XoqBusType):
-    _real = object
+    _real = _MissingPythonCan
     _xoq = object
 
 
@@ -54,19 +69,61 @@ def _patch_can(mod):
     try:
         import xoq_can as _xoq
 
-        if not isinstance(mod.Bus, _XoqBusType):
-            _XoqBus._real = mod.Bus
+        real_bus = getattr(mod, "Bus", _MissingPythonCan)
+        if not isinstance(real_bus, _XoqBusType):
+            _XoqBus._real = real_bus
             _XoqBus._xoq = _xoq.Bus
             _XoqBus.__name__ = "Bus"
             _XoqBus.__qualname__ = "Bus"
             mod.Bus = _XoqBus
 
         # Also patch can.interface.Bus (lerobot uses this path)
-        if hasattr(mod, "interface") and hasattr(mod.interface, "Bus"):
-            if not isinstance(mod.interface.Bus, _XoqBusType):
-                mod.interface.Bus = _XoqBus
+        iface = getattr(mod, "interface", None)
+        if iface is not None and hasattr(iface, "Bus"):
+            if not isinstance(iface.Bus, _XoqBusType):
+                iface.Bus = _XoqBus
+        elif iface is None:
+            # Create synthetic can.interface submodule
+            iface = types.ModuleType("can.interface")
+            iface.Bus = _XoqBus
+            mod.interface = iface
+            sys.modules["can.interface"] = iface
+
+        # Ensure can.Message exists (from xoq_can if not from python-can)
+        if not hasattr(mod, "Message"):
+            mod.Message = _xoq.Message
     except ImportError:
         pass
+
+
+def _make_synthetic_can():
+    """Create a synthetic ``can`` module backed entirely by xoq_can."""
+    import xoq_can as _xoq
+
+    mod = types.ModuleType("can")
+    mod.__package__ = "can"
+    mod.__path__ = []  # make it a package so `from can import ...` works
+
+    # Set up xoq Bus with dispatcher
+    _XoqBus._real = _MissingPythonCan
+    _XoqBus._xoq = _xoq.Bus
+    _XoqBus.__name__ = "Bus"
+    _XoqBus.__qualname__ = "Bus"
+    mod.Bus = _XoqBus
+    mod.Message = _xoq.Message
+
+    # Create can.interface submodule
+    iface = types.ModuleType("can.interface")
+    iface.Bus = _XoqBus
+    mod.interface = iface
+    sys.modules["can.interface"] = iface
+
+    # Copy constants from xoq_can
+    for name in dir(_xoq):
+        if name.startswith("INTERFACE_"):
+            setattr(mod, name, getattr(_xoq, name))
+
+    return mod
 
 
 class _CanFinder(importlib.abc.MetaPathFinder):
@@ -79,15 +136,20 @@ class _CanFinder(importlib.abc.MetaPathFinder):
         # Remove ourselves to avoid recursion
         sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
 
-        # Let the real can import happen normally
+        # Try the real python-can first
         spec = importlib.util.find_spec("can")
-        if spec is None:
-            return None
+        if spec is not None:
+            # Wrap the loader to patch after loading
+            original_loader = spec.loader
+            spec.loader = _PatchingLoader(original_loader)
+            return spec
 
-        # Wrap the loader to patch after loading
-        original_loader = spec.loader
-        spec.loader = _PatchingLoader(original_loader)
-        return spec
+        # python-can not installed — provide synthetic module from xoq_can
+        return importlib.machinery.ModuleSpec(
+            "can",
+            _SyntheticCanLoader(),
+            origin="xoq_can",
+        )
 
 
 class _PatchingLoader:
@@ -104,6 +166,16 @@ class _PatchingLoader:
     def exec_module(self, module):
         self._original.exec_module(module)
         _patch_can(module)
+
+
+class _SyntheticCanLoader:
+    """Loader that creates a synthetic can module backed by xoq_can."""
+
+    def create_module(self, spec):
+        return _make_synthetic_can()
+
+    def exec_module(self, module):
+        pass  # already populated in create_module
 
 
 def install():
