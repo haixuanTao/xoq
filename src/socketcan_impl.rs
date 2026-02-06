@@ -241,7 +241,7 @@ impl CanSocketBuilder {
                 Ok::<_, anyhow::Error>(ClientInner::Iroh {
                     send: Arc::new(Mutex::new(send)),
                     recv: Arc::new(Mutex::new(recv)),
-                    _conn: conn,
+                    _conn: Box::new(conn),
                 })
             })?,
             Transport::Moq { relay, token: _ } => runtime.block_on(async {
@@ -269,7 +269,7 @@ enum ClientInner {
         // Split stream for true full-duplex: reads and writes don't block each other
         send: Arc<Mutex<iroh::endpoint::SendStream>>,
         recv: Arc<Mutex<iroh::endpoint::RecvStream>>,
-        _conn: IrohConnection,
+        _conn: Box<IrohConnection>,
     },
     Moq {
         stream: Arc<tokio::sync::Mutex<crate::moq::MoqStream>>,

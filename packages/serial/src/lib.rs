@@ -1,3 +1,6 @@
+// PyO3 generated code triggers this lint on #[pymethods] error conversions
+#![allow(clippy::useless_conversion)]
+
 //! Drop-in replacement for pyserial - remote serial ports over P2P.
 //!
 //! This module provides a `serial.Serial` compatible class that connects
@@ -301,7 +304,7 @@ impl Serial {
 
 // pyserial constants
 #[pymodule]
-fn serial(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn xoq_serial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Serial>()?;
 
     // Parity constants

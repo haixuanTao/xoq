@@ -1,3 +1,6 @@
+// PyO3 generated code triggers this lint on #[pymethods] error conversions
+#![allow(clippy::useless_conversion)]
+
 //! Drop-in replacement for python-can - remote CAN bus over P2P.
 //!
 //! This module provides `can.Bus` and `can.Message` compatible classes that connect
@@ -410,7 +413,7 @@ impl Bus {
 
 // Python module
 #[pymodule]
-fn can(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn xoq_can(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Message>()?;
     m.add_class::<Bus>()?;
 

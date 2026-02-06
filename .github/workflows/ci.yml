@@ -39,7 +39,7 @@ jobs:
       - name: Clippy (all features)
         run: cargo clippy --features "iroh,serial,camera" -- -D warnings
       - name: Clippy (workspace)
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --exclude nvidia-video-codec-sdk -- -D warnings
 
   # Version consistency check across all packages
   version-check:

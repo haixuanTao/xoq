@@ -1,3 +1,6 @@
+// PyO3 generated code triggers this lint on #[pymethods] error conversions
+#![allow(clippy::useless_conversion)]
+
 //! Drop-in replacement for opencv-python - remote cameras over P2P.
 //!
 //! This module provides a `cv2.VideoCapture` compatible class that connects
@@ -127,6 +130,22 @@ impl VideoCapture {
             }
             None => Ok((false, py.None())),
         }
+    }
+
+    /// Get a camera property (OpenCV-compatible).
+    /// Remote cameras return sensible defaults since properties aren't queryable.
+    fn get(&self, prop_id: i32) -> f64 {
+        match prop_id {
+            3 => 640.0, // CAP_PROP_FRAME_WIDTH
+            4 => 480.0, // CAP_PROP_FRAME_HEIGHT
+            5 => 30.0,  // CAP_PROP_FPS
+            _ => 0.0,
+        }
+    }
+
+    /// Set a camera property (no-op for remote cameras, returns True for compatibility).
+    fn set(&self, _prop_id: i32, _value: f64) -> bool {
+        true
     }
 
     /// Check if the connection is open.
