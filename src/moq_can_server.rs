@@ -8,9 +8,11 @@ use socketcan::Socket;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use crate::can::{CanFdFrame, CanFrame};
 use crate::can_types::{wire, AnyCanFrame};
+use crate::moq::MoqStream;
 
 /// A server that bridges a local CAN interface to remote clients over MoQ relay.
 pub struct MoqCanServer {
@@ -98,7 +100,8 @@ impl MoqCanServer {
             self.interface
         );
 
-        let mut stream = crate::moq::MoqStream::accept_at(relay, path).await?;
+        let stream = MoqStream::accept_at(relay, path).await?;
+        let stream = Arc::new(Mutex::new(stream));
         tracing::info!("MoQ CAN server connected to relay");
 
         let mut can_read_rx = self
@@ -117,16 +120,15 @@ impl MoqCanServer {
 
         let can_write_tx = self.can_write_tx.clone();
 
-        // Split MoqStream for concurrent read/write
-        let (mut writer, mut reader, _pub_handle, _sub_handle) = stream.split();
-
         // CAN → MoQ task
+        let stream_writer = Arc::clone(&stream);
         let can_to_moq = tokio::spawn(async move {
             loop {
                 match can_read_rx.recv().await {
                     Some(frame) => {
                         let encoded = wire::encode(&frame);
-                        writer.write(encoded);
+                        let mut s = stream_writer.lock().await;
+                        s.write(encoded);
                     }
                     None => break,
                 }
@@ -137,7 +139,11 @@ impl MoqCanServer {
         // MoQ → CAN (main task)
         let mut pending = Vec::new();
         let result = loop {
-            match reader.read().await {
+            let data = {
+                let mut s = stream.lock().await;
+                s.read().await
+            };
+            match data {
                 Ok(Some(data)) => {
                     pending.extend_from_slice(&data);
 
