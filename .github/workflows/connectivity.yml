@@ -37,7 +37,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libv4l-dev libasound2-dev nasm
 
       - name: Create virtualenv
         run: python -m venv .venv && echo "$PWD/.venv/bin" >> $GITHUB_PATH
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build xoq-opencv
         working-directory: packages/cv2
-        run: maturin develop --release --no-default-features
+        run: maturin develop --release --no-default-features --features openh264
 
       - name: Build xoq-can
         working-directory: packages/can
