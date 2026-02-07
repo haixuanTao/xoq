@@ -146,7 +146,11 @@ impl AudioStreamBuilder {
                     builder = builder.alpn(crate::audio_server::AUDIO_ALPN);
                 }
                 let conn = builder.connect_str(&self.source).await?;
-                let stream = conn.open_stream().await?;
+                let mut stream = conn.open_stream().await?;
+                // Write a handshake byte to trigger the QUIC STREAM frame.
+                // Without this, the server's accept_bi() never returns because
+                // QUIC only notifies the peer about a new stream when data is sent.
+                stream.write(&[0u8]).await?;
                 let (send, recv) = stream.split();
                 Ok::<_, anyhow::Error>(ClientInner::Iroh {
                     send: Arc::new(Mutex::new(send)),

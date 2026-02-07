@@ -388,6 +388,11 @@ async fn handle_iroh_connection_separate(
     tracing::info!("Audio stream accepted, sending initial data");
     let (mut send, mut recv) = stream.split();
 
+    // Read and discard the handshake byte sent by the client.
+    // The client sends 1 byte to trigger the QUIC STREAM frame.
+    let mut handshake = [0u8; 1];
+    recv.read_exact(&mut handshake).await?;
+
     // Send an initial silence frame so the client knows the connection is alive,
     // even before the mic thread produces real audio data.
     let silence = make_silence_frame(&config);
@@ -566,6 +571,10 @@ async fn handle_iroh_connection_vpio(
     };
     tracing::info!("Audio stream accepted (VPIO), sending initial data");
     let (mut send, mut recv) = stream.split();
+
+    // Read and discard the handshake byte sent by the client.
+    let mut handshake = [0u8; 1];
+    recv.read_exact(&mut handshake).await?;
 
     // Send an initial silence frame so the client knows the connection is alive,
     // even before the mic thread produces real audio data.
