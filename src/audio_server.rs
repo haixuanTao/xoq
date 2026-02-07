@@ -290,7 +290,13 @@ impl AudioServer {
                         cancel.cancel();
                     }
                     if let Some(task) = active_task.take() {
-                        let _ = task.await;
+                        // Timeout so a stuck mic thread doesn't block new connections
+                        match tokio::time::timeout(std::time::Duration::from_secs(3), task).await {
+                            Ok(_) => {}
+                            Err(_) => {
+                                tracing::warn!("Previous handler cleanup timed out, proceeding");
+                            }
+                        }
                     }
 
                     let external_cancel = tokio_util::sync::CancellationToken::new();
@@ -395,15 +401,17 @@ async fn handle_iroh_connection_separate(
                 if cancel.is_cancelled() || ext_cancel.is_cancelled() {
                     break;
                 }
-                match input.read() {
-                    Ok(frame) => {
+                // Use try_read (non-blocking) so we can check cancellation tokens
+                // promptly. Blocking read() would hang forever if no mic data
+                // is produced (e.g. headless server without mic permission).
+                match input.try_read() {
+                    Some(frame) => {
                         if tx.blocking_send(frame).is_err() {
                             break;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("Audio input read error: {}", e);
-                        break;
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                 }
             }
@@ -550,15 +558,17 @@ async fn handle_iroh_connection_vpio(
                 if cancel.is_cancelled() || ext_cancel.is_cancelled() {
                     break;
                 }
-                match vpio.read() {
-                    Ok(frame) => {
+                // Use try_read (non-blocking) so we can check cancellation tokens
+                // promptly. Blocking read() would hang forever if no mic data
+                // is produced (e.g. headless server without mic permission).
+                match vpio.try_read() {
+                    Some(frame) => {
                         if tx.blocking_send(frame).is_err() {
                             break;
                         }
                     }
-                    Err(e) => {
-                        tracing::error!("VPIO input read error: {}", e);
-                        break;
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                 }
             }

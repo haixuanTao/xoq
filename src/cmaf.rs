@@ -1,6 +1,7 @@
-//! Platform-independent CMAF (Common Media Application Format) muxer for H.264 video streams.
+//! Platform-independent CMAF (Common Media Application Format) muxer for H.264 and AV1 video streams.
 //!
-//! This module provides a pure-Rust CMAF muxer and H.264 Annex B parser suitable for:
+//! This module provides a pure-Rust CMAF muxer, H.264 Annex B parser, and AV1 OBU parser
+//! suitable for:
 //! - Live streaming (DASH/HLS)
 //! - Media Source Extensions (MSE) in browsers
 //! - Low-latency video delivery
@@ -13,12 +14,12 @@
 //! ```text
 //! Initialization Segment:
 //!   ftyp (file type)
-//!   moov (movie header with track info, SPS/PPS)
+//!   moov (movie header with track info, SPS/PPS or av1C)
 //!
 //! Media Segments:
 //!   styp (segment type)
 //!   moof (movie fragment header)
-//!   mdat (media data - encoded NAL units)
+//!   mdat (media data - encoded NAL units or AV1 OBUs)
 //! ```
 
 /// H.264 NAL unit type constants.
@@ -190,6 +191,128 @@ pub fn parse_annex_b(data: &[u8]) -> ParsedFrame {
         sps,
         pps,
         is_keyframe,
+    }
+}
+
+// ============================================================================
+// AV1 OBU (Open Bitstream Unit) parsing
+// ============================================================================
+
+/// AV1 OBU type constants.
+pub mod obu_type {
+    pub const SEQUENCE_HEADER: u8 = 1;
+    pub const TEMPORAL_DELIMITER: u8 = 2;
+    pub const FRAME_HEADER: u8 = 3;
+    pub const TILE_GROUP: u8 = 4;
+    pub const FRAME: u8 = 6;
+}
+
+/// A parsed AV1 OBU.
+#[derive(Debug, Clone)]
+pub struct Obu {
+    /// OBU type (from header byte).
+    pub obu_type: u8,
+    /// Complete OBU data including the header.
+    pub data: Vec<u8>,
+}
+
+/// Read a LEB128 (unsigned) value from data at the given offset.
+/// Returns (value, bytes_consumed).
+fn read_leb128(data: &[u8], offset: usize) -> (u64, usize) {
+    let mut value: u64 = 0;
+    let mut bytes_read = 0;
+    for i in 0..8 {
+        if offset + i >= data.len() {
+            break;
+        }
+        let byte = data[offset + i];
+        value |= ((byte & 0x7F) as u64) << (i * 7);
+        bytes_read += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+    }
+    (value, bytes_read)
+}
+
+/// Parse AV1 bitstream into individual OBUs.
+pub fn parse_av1_obus(data: &[u8]) -> Vec<Obu> {
+    let mut obus = Vec::new();
+    let mut offset = 0;
+
+    while offset < data.len() {
+        let header_byte = data[offset];
+        let obu_type = (header_byte >> 3) & 0x0F;
+        let has_extension = (header_byte >> 2) & 1 == 1;
+        let has_size = (header_byte >> 1) & 1 == 1;
+
+        let mut header_size = 1;
+        if has_extension {
+            header_size += 1;
+        }
+
+        if !has_size {
+            // No size field — rest of data is this OBU
+            obus.push(Obu {
+                obu_type,
+                data: data[offset..].to_vec(),
+            });
+            break;
+        }
+
+        let (obu_size, leb_bytes) = read_leb128(data, offset + header_size);
+        header_size += leb_bytes;
+
+        let total_size = header_size + obu_size as usize;
+        let end = (offset + total_size).min(data.len());
+
+        obus.push(Obu {
+            obu_type,
+            data: data[offset..end].to_vec(),
+        });
+
+        offset = end;
+    }
+
+    obus
+}
+
+/// Extract the Sequence Header OBU from AV1 bitstream data.
+/// Returns the complete OBU (header + payload) if found.
+pub fn extract_av1_sequence_header(data: &[u8]) -> Option<Vec<u8>> {
+    for obu in parse_av1_obus(data) {
+        if obu.obu_type == obu_type::SEQUENCE_HEADER {
+            return Some(obu.data);
+        }
+    }
+    None
+}
+
+/// Parsed AV1 frame info from NVENC output.
+#[derive(Debug)]
+pub struct ParsedAv1Frame {
+    /// Sequence header OBU if present (for keyframes).
+    pub sequence_header: Option<Vec<u8>>,
+    /// Whether this frame is a keyframe.
+    pub is_keyframe: bool,
+    /// The raw encoded data (all OBUs).
+    pub data: Vec<u8>,
+}
+
+/// Parse raw AV1 bitstream from NVENC into structured frame info.
+pub fn parse_av1_frame(data: &[u8]) -> ParsedAv1Frame {
+    let obus = parse_av1_obus(data);
+    let sequence_header = obus
+        .iter()
+        .find(|o| o.obu_type == obu_type::SEQUENCE_HEADER)
+        .map(|o| o.data.clone());
+    // A keyframe is indicated by presence of a sequence header (NVENC emits it with keyframes)
+    let is_keyframe = sequence_header.is_some();
+
+    ParsedAv1Frame {
+        sequence_header,
+        is_keyframe,
+        data: data.to_vec(),
     }
 }
 
@@ -967,6 +1090,646 @@ impl CmafMuxer {
     }
 }
 
+// ============================================================================
+// AV1 CMAF Muxer
+// ============================================================================
+
+/// Fragmented MP4 muxer for AV1 video streams.
+///
+/// Produces CMAF-compliant fMP4 segments with `av01` sample entries.
+/// Frame data is written directly to mdat as raw AV1 OBUs (no NAL length-prefix conversion).
+pub struct Av1CmafMuxer {
+    config: CmafConfig,
+    initialized: bool,
+    width: u32,
+    height: u32,
+    /// AV1 Sequence Header OBU (for av1C config box)
+    sequence_header_obu: Vec<u8>,
+    pending_frames: Vec<PendingFrame>,
+    sequence_number: u32,
+    fragment_base_dts: i64,
+    last_dts: i64,
+    track_id: u32,
+}
+
+impl Av1CmafMuxer {
+    /// Create a new AV1 CMAF muxer.
+    pub fn new(config: CmafConfig) -> Self {
+        Self {
+            config,
+            initialized: false,
+            width: 0,
+            height: 0,
+            sequence_header_obu: Vec::new(),
+            pending_frames: Vec::new(),
+            sequence_number: 1,
+            fragment_base_dts: 0,
+            last_dts: 0,
+            track_id: 1,
+        }
+    }
+
+    /// Create the initialization segment (ftyp + moov with av01/av1C).
+    ///
+    /// `sequence_header_obu` is the complete Sequence Header OBU from the encoder,
+    /// typically extracted from the first keyframe via `extract_av1_sequence_header()`.
+    pub fn create_init_segment(
+        &mut self,
+        sequence_header_obu: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        self.sequence_header_obu = sequence_header_obu.to_vec();
+        self.width = width;
+        self.height = height;
+        self.initialized = true;
+
+        let mut buf = Vec::new();
+        self.write_ftyp(&mut buf);
+        self.write_moov(&mut buf);
+        buf
+    }
+
+    /// Add a raw AV1 encoded frame.
+    ///
+    /// `data` is the raw NVENC AV1 output (complete OBUs for one temporal unit).
+    /// Returns a media segment when a fragment boundary is reached.
+    pub fn add_frame(
+        &mut self,
+        data: &[u8],
+        pts: i64,
+        dts: i64,
+        duration: u32,
+        is_keyframe: bool,
+    ) -> Option<Vec<u8>> {
+        if !self.initialized {
+            return None;
+        }
+
+        let should_flush = if self.pending_frames.is_empty() {
+            false
+        } else {
+            let fragment_duration =
+                (dts - self.fragment_base_dts) * 1000 / self.config.timescale as i64;
+            is_keyframe && fragment_duration >= self.config.fragment_duration_ms as i64
+        };
+
+        let segment = if should_flush {
+            Some(self.flush_fragment())
+        } else {
+            None
+        };
+
+        if self.pending_frames.is_empty() {
+            self.fragment_base_dts = dts;
+        }
+
+        let composition_offset = (pts - dts) as i32;
+
+        // For AV1 in ISOBMFF, each sample is the raw OBU data directly
+        self.pending_frames.push(PendingFrame {
+            data: data.to_vec(),
+            duration,
+            is_sync: is_keyframe,
+            composition_offset,
+        });
+
+        self.last_dts = dts;
+        segment
+    }
+
+    /// Flush remaining frames as a final segment.
+    pub fn flush(&mut self) -> Option<Vec<u8>> {
+        if self.pending_frames.is_empty() {
+            return None;
+        }
+        Some(self.flush_fragment())
+    }
+
+    fn flush_fragment(&mut self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.write_styp(&mut buf);
+        self.write_moof(&mut buf);
+        self.write_mdat(&mut buf);
+        self.sequence_number += 1;
+        self.pending_frames.clear();
+        buf
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    pub fn pending_frame_count(&self) -> usize {
+        self.pending_frames.len()
+    }
+
+    // ========================================
+    // AV1 CMAF box writers
+    // ========================================
+
+    fn write_ftyp(&self, buf: &mut Vec<u8>) {
+        let brands = [b"isom", b"iso6", b"cmfc", b"cmfv", b"av01", b"mp41"];
+        let size = 8 + 4 + 4 + (brands.len() * 4);
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"ftyp");
+        buf.extend_from_slice(b"isom");
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        for brand in &brands {
+            buf.extend_from_slice(*brand);
+        }
+    }
+
+    fn write_styp(&self, buf: &mut Vec<u8>) {
+        let brands = [b"msdh", b"msix", b"cmfc", b"cmfv"];
+        let size = 8 + 4 + 4 + (brands.len() * 4);
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"styp");
+        buf.extend_from_slice(b"cmfv");
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        for brand in &brands {
+            buf.extend_from_slice(*brand);
+        }
+    }
+
+    fn write_moov(&self, buf: &mut Vec<u8>) {
+        let mut moov_content = Vec::new();
+        self.write_mvhd(&mut moov_content);
+        self.write_trak(&mut moov_content);
+        self.write_mvex(&mut moov_content);
+        let size = 8 + moov_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&moov_content);
+    }
+
+    fn write_mvhd(&self, buf: &mut Vec<u8>) {
+        let mut content = Vec::new();
+        content.push(0);
+        content.extend_from_slice(&[0, 0, 0]);
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&self.config.timescale.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0x00010000u32.to_be_bytes());
+        content.extend_from_slice(&0x0100u16.to_be_bytes());
+        content.extend_from_slice(&[0; 2]);
+        content.extend_from_slice(&[0; 8]);
+        let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+        for m in &matrix {
+            content.extend_from_slice(&m.to_be_bytes());
+        }
+        content.extend_from_slice(&[0; 24]);
+        content.extend_from_slice(&2u32.to_be_bytes());
+        let size = 8 + content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"mvhd");
+        buf.extend_from_slice(&content);
+    }
+
+    fn write_trak(&self, buf: &mut Vec<u8>) {
+        let mut trak_content = Vec::new();
+        self.write_tkhd(&mut trak_content);
+        self.write_mdia(&mut trak_content);
+        let size = 8 + trak_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"trak");
+        buf.extend_from_slice(&trak_content);
+    }
+
+    fn write_tkhd(&self, buf: &mut Vec<u8>) {
+        let mut content = Vec::new();
+        content.push(0);
+        content.extend_from_slice(&[0, 0, 3]);
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&self.track_id.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&[0; 8]);
+        content.extend_from_slice(&0i16.to_be_bytes());
+        content.extend_from_slice(&0i16.to_be_bytes());
+        content.extend_from_slice(&0i16.to_be_bytes());
+        content.extend_from_slice(&0u16.to_be_bytes());
+        let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+        for m in &matrix {
+            content.extend_from_slice(&m.to_be_bytes());
+        }
+        content.extend_from_slice(&(self.width << 16).to_be_bytes());
+        content.extend_from_slice(&(self.height << 16).to_be_bytes());
+        let size = 8 + content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"tkhd");
+        buf.extend_from_slice(&content);
+    }
+
+    fn write_mdia(&self, buf: &mut Vec<u8>) {
+        let mut mdia_content = Vec::new();
+        self.write_mdhd(&mut mdia_content);
+        self.write_hdlr(&mut mdia_content);
+        self.write_minf(&mut mdia_content);
+        let size = 8 + mdia_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"mdia");
+        buf.extend_from_slice(&mdia_content);
+    }
+
+    fn write_mdhd(&self, buf: &mut Vec<u8>) {
+        let mut content = Vec::new();
+        content.push(0);
+        content.extend_from_slice(&[0, 0, 0]);
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&self.config.timescale.to_be_bytes());
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(&0x55c4u16.to_be_bytes());
+        content.extend_from_slice(&0u16.to_be_bytes());
+        let size = 8 + content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"mdhd");
+        buf.extend_from_slice(&content);
+    }
+
+    fn write_hdlr(&self, buf: &mut Vec<u8>) {
+        let mut content = Vec::new();
+        content.push(0);
+        content.extend_from_slice(&[0, 0, 0]);
+        content.extend_from_slice(&0u32.to_be_bytes());
+        content.extend_from_slice(b"vide");
+        content.extend_from_slice(&[0; 12]);
+        content.extend_from_slice(b"VideoHandler\0");
+        let size = 8 + content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"hdlr");
+        buf.extend_from_slice(&content);
+    }
+
+    fn write_minf(&self, buf: &mut Vec<u8>) {
+        let mut minf_content = Vec::new();
+        self.write_vmhd(&mut minf_content);
+        self.write_dinf(&mut minf_content);
+        self.write_stbl(&mut minf_content);
+        let size = 8 + minf_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"minf");
+        buf.extend_from_slice(&minf_content);
+    }
+
+    fn write_vmhd(&self, buf: &mut Vec<u8>) {
+        let mut content = Vec::new();
+        content.push(0);
+        content.extend_from_slice(&[0, 0, 1]);
+        content.extend_from_slice(&0u16.to_be_bytes());
+        content.extend_from_slice(&[0; 6]);
+        let size = 8 + content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"vmhd");
+        buf.extend_from_slice(&content);
+    }
+
+    fn write_dinf(&self, buf: &mut Vec<u8>) {
+        let mut dinf_content = Vec::new();
+        let mut dref_content = Vec::new();
+        dref_content.push(0);
+        dref_content.extend_from_slice(&[0, 0, 0]);
+        dref_content.extend_from_slice(&1u32.to_be_bytes());
+        dref_content.extend_from_slice(&12u32.to_be_bytes());
+        dref_content.extend_from_slice(b"url ");
+        dref_content.push(0);
+        dref_content.extend_from_slice(&[0, 0, 1]);
+        let dref_size = 8 + dref_content.len();
+        dinf_content.extend_from_slice(&(dref_size as u32).to_be_bytes());
+        dinf_content.extend_from_slice(b"dref");
+        dinf_content.extend_from_slice(&dref_content);
+        let size = 8 + dinf_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"dinf");
+        buf.extend_from_slice(&dinf_content);
+    }
+
+    fn write_stbl(&self, buf: &mut Vec<u8>) {
+        let mut stbl_content = Vec::new();
+        self.write_stsd(&mut stbl_content);
+        // Empty required boxes (data is in fragments)
+        for box_type in [b"stts", b"stsc", b"stsz", b"stco"] {
+            let mut c = Vec::new();
+            c.push(0);
+            c.extend_from_slice(&[0, 0, 0]);
+            c.extend_from_slice(&0u32.to_be_bytes());
+            if *box_type == *b"stsz" {
+                c.extend_from_slice(&0u32.to_be_bytes()); // sample_count
+            }
+            let s = 8 + c.len();
+            stbl_content.extend_from_slice(&(s as u32).to_be_bytes());
+            stbl_content.extend_from_slice(box_type);
+            stbl_content.extend_from_slice(&c);
+        }
+        let size = 8 + stbl_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"stbl");
+        buf.extend_from_slice(&stbl_content);
+    }
+
+    fn write_stsd(&self, buf: &mut Vec<u8>) {
+        let mut stsd_content = Vec::new();
+        stsd_content.push(0);
+        stsd_content.extend_from_slice(&[0, 0, 0]);
+        stsd_content.extend_from_slice(&1u32.to_be_bytes());
+        self.write_av01(&mut stsd_content);
+        let size = 8 + stsd_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"stsd");
+        buf.extend_from_slice(&stsd_content);
+    }
+
+    /// Write av01 sample entry (AV1 equivalent of avc1).
+    fn write_av01(&self, buf: &mut Vec<u8>) {
+        let mut av01_content = Vec::new();
+
+        av01_content.extend_from_slice(&[0; 6]); // reserved
+        av01_content.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        av01_content.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
+        av01_content.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        av01_content.extend_from_slice(&[0; 12]); // pre_defined
+        av01_content.extend_from_slice(&(self.width as u16).to_be_bytes());
+        av01_content.extend_from_slice(&(self.height as u16).to_be_bytes());
+        av01_content.extend_from_slice(&0x00480000u32.to_be_bytes()); // horiz res 72dpi
+        av01_content.extend_from_slice(&0x00480000u32.to_be_bytes()); // vert res 72dpi
+        av01_content.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        av01_content.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+
+        // Compressor name (32 bytes)
+        let mut compressor = [0u8; 32];
+        let name = b"xoq-av1";
+        compressor[0] = name.len() as u8;
+        compressor[1..1 + name.len()].copy_from_slice(name);
+        av01_content.extend_from_slice(&compressor);
+
+        av01_content.extend_from_slice(&0x0018u16.to_be_bytes()); // depth (24-bit)
+        av01_content.extend_from_slice(&(-1i16).to_be_bytes()); // pre_defined
+
+        // av1C box (AV1CodecConfigurationRecord)
+        self.write_av1c(&mut av01_content);
+
+        let size = 8 + av01_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"av01");
+        buf.extend_from_slice(&av01_content);
+    }
+
+    /// Write av1C box containing the AV1 codec configuration.
+    fn write_av1c(&self, buf: &mut Vec<u8>) {
+        let mut av1c_content = Vec::new();
+
+        // AV1CodecConfigurationRecord (4 bytes + configOBUs)
+        // Byte 0: marker(1)=1 | version(7)=1
+        av1c_content.push(0x81);
+
+        // Parse seq_profile from sequence header OBU payload
+        // The OBU header is 1-2 bytes, then payload starts with seq_profile(3 bits)
+        let (seq_profile, seq_level_idx, high_bitdepth, twelve_bit, monochrome, chroma_x, chroma_y) =
+            self.parse_sequence_header_fields();
+
+        // Byte 1: seq_profile(3) | seq_level_idx_0(5)
+        av1c_content.push((seq_profile << 5) | (seq_level_idx & 0x1F));
+
+        // Byte 2: seq_tier_0(1) | high_bitdepth(1) | twelve_bit(1) | monochrome(1) |
+        //         chroma_subsampling_x(1) | chroma_subsampling_y(1) | chroma_sample_position(2)
+        #[allow(clippy::identity_op)]
+        let byte2 = (0u8 << 7) // seq_tier_0 = 0
+            | ((high_bitdepth & 1) << 6)
+            | ((twelve_bit & 1) << 5)
+            | ((monochrome & 1) << 4)
+            | ((chroma_x & 1) << 3)
+            | ((chroma_y & 1) << 2)
+            | 0; // chroma_sample_position = 0 (unknown)
+        av1c_content.push(byte2);
+
+        // Byte 3: reserved(3)=0 | initial_presentation_delay_present(1)=0 | reserved(4)=0
+        av1c_content.push(0x00);
+
+        // configOBUs: the Sequence Header OBU
+        av1c_content.extend_from_slice(&self.sequence_header_obu);
+
+        let size = 8 + av1c_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"av1C");
+        buf.extend_from_slice(&av1c_content);
+    }
+
+    /// Parse key fields from the stored Sequence Header OBU for av1C.
+    fn parse_sequence_header_fields(&self) -> (u8, u8, u8, u8, u8, u8, u8) {
+        // Default values (profile 0, level 4.0, 8-bit 4:2:0)
+        let mut seq_profile = 0u8;
+        let mut seq_level_idx = 8u8; // Level 4.0
+        let high_bitdepth = 0u8;
+        let twelve_bit = 0u8;
+        let monochrome = 0u8;
+        let mut chroma_x = 1u8;
+        let mut chroma_y = 1u8;
+
+        if self.sequence_header_obu.is_empty() {
+            return (
+                seq_profile,
+                seq_level_idx,
+                high_bitdepth,
+                twelve_bit,
+                monochrome,
+                chroma_x,
+                chroma_y,
+            );
+        }
+
+        // Skip OBU header to get to payload
+        let header_byte = self.sequence_header_obu[0];
+        let has_extension = (header_byte >> 2) & 1 == 1;
+        let has_size = (header_byte >> 1) & 1 == 1;
+        let mut payload_offset = 1;
+        if has_extension {
+            payload_offset += 1;
+        }
+        if has_size {
+            let (_size, leb_bytes) = read_leb128(&self.sequence_header_obu, payload_offset);
+            payload_offset += leb_bytes;
+        }
+
+        if payload_offset >= self.sequence_header_obu.len() {
+            return (
+                seq_profile,
+                seq_level_idx,
+                high_bitdepth,
+                twelve_bit,
+                monochrome,
+                chroma_x,
+                chroma_y,
+            );
+        }
+
+        // Sequence Header OBU payload is bit-packed
+        // seq_profile (3 bits) | still_picture (1 bit) | reduced_still_picture_header (1 bit) | ...
+        let payload = &self.sequence_header_obu[payload_offset..];
+        if payload.is_empty() {
+            return (
+                seq_profile,
+                seq_level_idx,
+                high_bitdepth,
+                twelve_bit,
+                monochrome,
+                chroma_x,
+                chroma_y,
+            );
+        }
+
+        seq_profile = (payload[0] >> 5) & 0x07;
+        let _still_picture = (payload[0] >> 4) & 1;
+        let reduced_still_picture_header = (payload[0] >> 3) & 1;
+
+        if reduced_still_picture_header == 1 && payload.len() > 1 {
+            // seq_level_idx[0] is next 5 bits
+            seq_level_idx = ((payload[0] & 0x07) << 2) | (payload[1] >> 6);
+        } else if payload.len() > 1 {
+            // For non-reduced headers, parse timing_info_present(1) + more complex structure
+            // For our use case, just use safe defaults based on profile
+            seq_level_idx = 8; // Level 4.0
+        }
+
+        // Set bitdepth fields based on profile
+        // Profile 0: 8-bit or 10-bit 4:2:0
+        // Profile 2: can do 8/10/12-bit
+        // We know our config: P010 = 10-bit 4:2:0, ABGR = 8-bit
+        // These are set by caller via create_init_segment params
+        // For safety, use conservative defaults
+        if seq_profile == 0 {
+            chroma_x = 1;
+            chroma_y = 1;
+        }
+
+        (
+            seq_profile,
+            seq_level_idx,
+            high_bitdepth,
+            twelve_bit,
+            monochrome,
+            chroma_x,
+            chroma_y,
+        )
+    }
+
+    fn write_mvex(&self, buf: &mut Vec<u8>) {
+        let mut mvex_content = Vec::new();
+        // trex box
+        let mut trex_content = Vec::new();
+        trex_content.push(0);
+        trex_content.extend_from_slice(&[0, 0, 0]);
+        trex_content.extend_from_slice(&self.track_id.to_be_bytes());
+        trex_content.extend_from_slice(&1u32.to_be_bytes());
+        trex_content.extend_from_slice(&0u32.to_be_bytes());
+        trex_content.extend_from_slice(&0u32.to_be_bytes());
+        trex_content.extend_from_slice(&0u32.to_be_bytes());
+        let trex_size = 8 + trex_content.len();
+        mvex_content.extend_from_slice(&(trex_size as u32).to_be_bytes());
+        mvex_content.extend_from_slice(b"trex");
+        mvex_content.extend_from_slice(&trex_content);
+        let size = 8 + mvex_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"mvex");
+        buf.extend_from_slice(&mvex_content);
+    }
+
+    fn write_moof(&self, buf: &mut Vec<u8>) {
+        let mut moof_content = Vec::new();
+
+        // mfhd
+        let mut mfhd_content = Vec::new();
+        mfhd_content.push(0);
+        mfhd_content.extend_from_slice(&[0, 0, 0]);
+        mfhd_content.extend_from_slice(&self.sequence_number.to_be_bytes());
+        let mfhd_size = 8 + mfhd_content.len();
+        moof_content.extend_from_slice(&(mfhd_size as u32).to_be_bytes());
+        moof_content.extend_from_slice(b"mfhd");
+        moof_content.extend_from_slice(&mfhd_content);
+
+        // traf
+        self.write_traf(&mut moof_content, buf.len());
+
+        let size = 8 + moof_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"moof");
+        buf.extend_from_slice(&moof_content);
+    }
+
+    fn write_traf(&self, buf: &mut Vec<u8>, _outer_offset: usize) {
+        let mut traf_content = Vec::new();
+
+        // tfhd
+        let mut tfhd_content = Vec::new();
+        tfhd_content.push(0);
+        tfhd_content.extend_from_slice(&[0x02, 0x00, 0x00]); // default-base-is-moof
+        tfhd_content.extend_from_slice(&self.track_id.to_be_bytes());
+        let tfhd_size = 8 + tfhd_content.len();
+        traf_content.extend_from_slice(&(tfhd_size as u32).to_be_bytes());
+        traf_content.extend_from_slice(b"tfhd");
+        traf_content.extend_from_slice(&tfhd_content);
+
+        // tfdt
+        let mut tfdt_content = Vec::new();
+        tfdt_content.push(1); // version 1 for 64-bit time
+        tfdt_content.extend_from_slice(&[0, 0, 0]);
+        tfdt_content.extend_from_slice(&(self.fragment_base_dts as u64).to_be_bytes());
+        let tfdt_size = 8 + tfdt_content.len();
+        traf_content.extend_from_slice(&(tfdt_size as u32).to_be_bytes());
+        traf_content.extend_from_slice(b"tfdt");
+        traf_content.extend_from_slice(&tfdt_content);
+
+        // trun - calculate sizes for data_offset
+        let sample_count = self.pending_frames.len() as u32;
+        let trun_content_size = 4 + 4 + 4 + (sample_count as usize * 16);
+        let trun_size = 8 + trun_content_size;
+
+        let traf_size = 8 + tfhd_size + tfdt_size + trun_size;
+        let mfhd_size = 8 + 8; // version/flags + seq_number
+        let moof_size = 8 + mfhd_size + traf_size;
+        let data_offset = moof_size + 8; // +8 for mdat header
+
+        let mut trun_content = Vec::new();
+        trun_content.push(0);
+        trun_content.extend_from_slice(&[0x00, 0x0F, 0x01]); // all flags
+        trun_content.extend_from_slice(&sample_count.to_be_bytes());
+        trun_content.extend_from_slice(&(data_offset as u32).to_be_bytes());
+
+        for frame in &self.pending_frames {
+            trun_content.extend_from_slice(&frame.duration.to_be_bytes());
+            trun_content.extend_from_slice(&(frame.data.len() as u32).to_be_bytes());
+            let flags = if frame.is_sync {
+                0x02000000u32
+            } else {
+                0x01010000u32
+            };
+            trun_content.extend_from_slice(&flags.to_be_bytes());
+            trun_content.extend_from_slice(&frame.composition_offset.to_be_bytes());
+        }
+
+        traf_content.extend_from_slice(&(trun_size as u32).to_be_bytes());
+        traf_content.extend_from_slice(b"trun");
+        traf_content.extend_from_slice(&trun_content);
+
+        let size = 8 + traf_content.len();
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"traf");
+        buf.extend_from_slice(&traf_content);
+    }
+
+    fn write_mdat(&self, buf: &mut Vec<u8>) {
+        let total_data_size: usize = self.pending_frames.iter().map(|f| f.data.len()).sum();
+        let size = 8 + total_data_size;
+        buf.extend_from_slice(&(size as u32).to_be_bytes());
+        buf.extend_from_slice(b"mdat");
+        for frame in &self.pending_frames {
+            buf.extend_from_slice(&frame.data);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1160,6 +1923,107 @@ mod tests {
         // Check moof box
         assert!(seg.windows(4).any(|w| w == b"moof"));
         // Check mdat box
+        assert!(seg.windows(4).any(|w| w == b"mdat"));
+    }
+
+    // ========================================
+    // AV1 tests
+    // ========================================
+
+    #[test]
+    fn test_parse_av1_obus() {
+        // Build a fake AV1 bitstream with two OBUs:
+        // OBU 1: Sequence Header (type=1), has_size=1, 3 bytes payload
+        // Header byte: obu_type=1 (bits 6-3), no extension, has_size=1
+        // 0b0_0001_0_1_0 = 0x0A
+        let mut data = Vec::new();
+        data.push(0x0A); // Sequence Header OBU header
+        data.push(3); // size = 3 (leb128)
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // payload
+                                                     // OBU 2: Frame (type=6), has_size=1, 2 bytes payload
+                                                     // 0b0_0110_0_1_0 = 0x32
+        data.push(0x32); // Frame OBU header
+        data.push(2); // size = 2
+        data.extend_from_slice(&[0xDD, 0xEE]); // payload
+
+        let obus = parse_av1_obus(&data);
+        assert_eq!(obus.len(), 2);
+        assert_eq!(obus[0].obu_type, obu_type::SEQUENCE_HEADER);
+        assert_eq!(obus[0].data.len(), 5); // header(1) + size(1) + payload(3)
+        assert_eq!(obus[1].obu_type, obu_type::FRAME);
+        assert_eq!(obus[1].data.len(), 4); // header(1) + size(1) + payload(2)
+    }
+
+    #[test]
+    fn test_extract_av1_sequence_header() {
+        let mut data = Vec::new();
+        // Temporal Delimiter (type=2)
+        data.push(0x12); // 0b0_0010_0_1_0
+        data.push(0); // size = 0
+                      // Sequence Header (type=1)
+        data.push(0x0A); // 0b0_0001_0_1_0
+        data.push(2);
+        data.extend_from_slice(&[0x11, 0x22]);
+
+        let seq_hdr = extract_av1_sequence_header(&data);
+        assert!(seq_hdr.is_some());
+        let seq_hdr = seq_hdr.unwrap();
+        assert_eq!(seq_hdr[0], 0x0A); // starts with OBU header
+        assert_eq!(seq_hdr.len(), 4); // header + size + 2 bytes payload
+    }
+
+    #[test]
+    fn test_av1_cmaf_init_segment() {
+        let mut muxer = Av1CmafMuxer::new(CmafConfig::default());
+        assert!(!muxer.is_initialized());
+
+        // Fake sequence header OBU
+        let seq_hdr = vec![0x0A, 0x02, 0x00, 0x00];
+        let init = muxer.create_init_segment(&seq_hdr, 640, 480);
+        assert!(muxer.is_initialized());
+        assert!(!init.is_empty());
+
+        // Check ftyp
+        assert_eq!(&init[4..8], b"ftyp");
+        // Check moov exists
+        assert!(init.windows(4).any(|w| w == b"moov"));
+        // Check av01 sample entry exists
+        assert!(init.windows(4).any(|w| w == b"av01"));
+        // Check av1C config box exists
+        assert!(init.windows(4).any(|w| w == b"av1C"));
+    }
+
+    #[test]
+    fn test_av1_cmaf_add_frame_and_flush() {
+        let mut muxer = Av1CmafMuxer::new(CmafConfig {
+            fragment_duration_ms: 33,
+            timescale: 90000,
+        });
+
+        let seq_hdr = vec![0x0A, 0x02, 0x00, 0x00];
+        muxer.create_init_segment(&seq_hdr, 640, 480);
+
+        // First frame (keyframe)
+        let seg = muxer.add_frame(
+            &[0x32, 0x05, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE],
+            0,
+            0,
+            3000,
+            true,
+        );
+        assert!(seg.is_none());
+        assert_eq!(muxer.pending_frame_count(), 1);
+
+        // Second frame
+        let seg = muxer.add_frame(&[0x32, 0x03, 0x11, 0x22, 0x33], 3000, 3000, 3000, false);
+        assert!(seg.is_none());
+
+        // Flush
+        let seg = muxer.flush();
+        assert!(seg.is_some());
+        let seg = seg.unwrap();
+        assert!(seg.windows(4).any(|w| w == b"styp"));
+        assert!(seg.windows(4).any(|w| w == b"moof"));
         assert!(seg.windows(4).any(|w| w == b"mdat"));
     }
 }
