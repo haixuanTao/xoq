@@ -369,13 +369,23 @@ async fn handle_iroh_connection_separate(
     external_cancel: tokio_util::sync::CancellationToken,
     config: AudioConfig,
 ) -> Result<()> {
+    tracing::info!("Waiting for audio stream from client...");
     let stream = tokio::select! {
-        result = conn.accept_stream() => result?,
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), conn.accept_stream()) => {
+            match result {
+                Ok(r) => r?,
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for client stream (stale connection?)");
+                    anyhow::bail!("accept_stream timed out after 10s");
+                }
+            }
+        }
         _ = external_cancel.cancelled() => {
             tracing::info!("Connection cancelled while waiting for stream");
             return Ok(());
         }
     };
+    tracing::info!("Audio stream accepted, sending initial data");
     let (mut send, mut recv) = stream.split();
 
     // Send an initial silence frame so the client knows the connection is alive,
@@ -384,7 +394,7 @@ async fn handle_iroh_connection_separate(
     let header = silence.encode_header();
     send.write_all(&header).await?;
     send.write_all(&silence.data).await?;
-    tracing::debug!("Sent initial silence frame to client");
+    tracing::info!("Initial silence frame sent to client");
 
     let cancel_token = conn.cancellation_token();
 
@@ -538,13 +548,23 @@ async fn handle_iroh_connection_vpio(
     external_cancel: tokio_util::sync::CancellationToken,
     config: AudioConfig,
 ) -> Result<()> {
+    tracing::info!("Waiting for audio stream from client (VPIO)...");
     let stream = tokio::select! {
-        result = conn.accept_stream() => result?,
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), conn.accept_stream()) => {
+            match result {
+                Ok(r) => r?,
+                Err(_) => {
+                    tracing::warn!("Timed out waiting for client stream (stale connection?)");
+                    anyhow::bail!("accept_stream timed out after 10s");
+                }
+            }
+        }
         _ = external_cancel.cancelled() => {
             tracing::info!("Connection cancelled while waiting for stream");
             return Ok(());
         }
     };
+    tracing::info!("Audio stream accepted (VPIO), sending initial data");
     let (mut send, mut recv) = stream.split();
 
     // Send an initial silence frame so the client knows the connection is alive,
@@ -553,7 +573,7 @@ async fn handle_iroh_connection_vpio(
     let header = silence.encode_header();
     send.write_all(&header).await?;
     send.write_all(&silence.data).await?;
-    tracing::debug!("Sent initial silence frame to client");
+    tracing::info!("Initial silence frame sent to client (VPIO)");
 
     let cancel_token = conn.cancellation_token();
 
