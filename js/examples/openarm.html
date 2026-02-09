@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenArm 3D Visualizer - xoq</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Top bar */
+    .top-bar {
+      padding: 0.5rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      border-bottom: 1px solid #333;
+      background: #16162a;
+    }
+    .top-bar h1 { color: #00d4ff; font-size: 1.1rem; white-space: nowrap; }
+    .top-bar label {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.85rem;
+      color: #aaa;
+    }
+    .top-bar input[type="text"] {
+      padding: 0.35rem 0.5rem;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #2a2a4a;
+      color: #fff;
+      font-size: 0.85rem;
+      width: 240px;
+    }
+    button {
+      padding: 0.35rem 0.75rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.2s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #startBtn { background: #00d4ff; color: #000; }
+    #startBtn:hover:not(:disabled) { background: #00b8e6; }
+    #stopBtn { background: #ff4757; color: #fff; }
+    #stopBtn:hover:not(:disabled) { background: #ff3344; }
+    #queryBtn { background: #2a2a4a; color: #888; border: 1px solid #444; }
+    #queryBtn.active { background: #2ed573; color: #000; border-color: #2ed573; }
+    #queryBtn:hover:not(:disabled) { background: #444; }
+    #queryBtn.active:hover:not(:disabled) { background: #26b860; }
+
+    /* Main layout */
+    .main {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+
+    /* 3D canvas */
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+    }
+    #threeCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .canvas-overlay {
+      position: absolute;
+      top: 0.5rem;
+      left: 0.5rem;
+      font-size: 0.7rem;
+      color: #888;
+      pointer-events: none;
+    }
+
+    /* Right panel */
+    .side-panel {
+      width: 280px;
+      background: #16162a;
+      border-left: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .panel-section {
+      padding: 0.75rem;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .panel-section h3 {
+      font-size: 0.8rem;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Joint rows */
+    .joint-row {
+      display: grid;
+      grid-template-columns: 50px 1fr 50px 50px;
+      gap: 0.25rem;
+      align-items: center;
+      padding: 0.3rem 0;
+      font-size: 0.8rem;
+      border-bottom: 1px solid #1e1e3a;
+    }
+    .joint-row:last-child { border-bottom: none; }
+    .joint-label {
+      font-weight: bold;
+      white-space: nowrap;
+    }
+    .joint-angle {
+      font-family: 'Monaco', 'Menlo', monospace;
+      text-align: right;
+      font-size: 0.85rem;
+    }
+    .joint-vel, .joint-tau {
+      font-family: 'Monaco', 'Menlo', monospace;
+      text-align: right;
+      font-size: 0.7rem;
+      color: #888;
+    }
+
+    /* Stats */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+    }
+    .stat {
+      background: #2a2a4a;
+      padding: 0.4rem;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .stat-label { color: #888; font-size: 0.65rem; text-transform: uppercase; }
+    .stat-value { font-size: 0.9rem; font-weight: bold; color: #00d4ff; }
+
+    /* Log */
+    .log-panel {
+      height: 120px;
+      border-top: 1px solid #333;
+      background: #0a0a1a;
+      overflow-y: auto;
+      padding: 0.5rem;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.7rem;
+      flex-shrink: 0;
+    }
+    .log-entry { margin: 0.15rem 0; }
+    .log-info { color: #888; }
+    .log-success { color: #2ed573; }
+    .log-error { color: #ff4757; }
+    .log-data { color: #00d4ff; }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <h1>OpenArm 3D</h1>
+    <label>
+      Relay:
+      <input type="text" id="relayUrl" />
+    </label>
+    <label>
+      Left:
+      <input type="text" id="leftPath" style="width:200px;" />
+    </label>
+    <label>
+      Right:
+      <input type="text" id="rightPath" style="width:200px;" />
+    </label>
+    <label>
+      Cert hash:
+      <input type="text" id="certHash" placeholder="sha256 hex (optional)" style="width:140px;" />
+    </label>
+    <label>
+      Hz:
+      <input type="number" id="queryRate" value="100" min="10" max="1000" step="10" style="width:60px; padding:0.35rem 0.3rem; border:1px solid #444; border-radius:4px; background:#2a2a4a; color:#fff; font-size:0.85rem;" />
+    </label>
+    <button id="startBtn">Connect</button>
+    <button id="stopBtn" disabled>Disconnect</button>
+    <button id="queryBtn" disabled>Query Motors</button>
+    <span id="statusText" style="color:#888; font-size:0.8rem;">Idle</span>
+  </div>
+
+  <div class="main">
+    <div class="canvas-container">
+      <canvas id="threeCanvas"></canvas>
+      <div class="canvas-overlay">
+        <span>Drag to orbit / Scroll to zoom / Right-drag to pan</span>
+      </div>
+    </div>
+
+    <div class="side-panel">
+      <div class="panel-section">
+        <h3>Joint Angles</h3>
+        <div class="joint-row" style="font-size:0.65rem; color:#666;">
+          <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Vel</span><span style="text-align:right;">Tau</span>
+        </div>
+        <div id="jointRows"></div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Temperatures</h3>
+        <div id="tempRows"></div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Stats</h3>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="stat-label">Frames</div>
+            <div class="stat-value" id="frameCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Bytes</div>
+            <div class="stat-value" id="bytesReceived">0 B</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">FPS</div>
+            <div class="stat-value" id="canFps">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Last</div>
+            <div class="stat-value" id="lastUpdate">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="log-panel" id="log"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+    import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
+    import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+    import URDFLoader from "urdf-loader";
+    import * as Moq from "@moq/lite";
+
+    // ─── Config ──────────────────────────────────────────
+    const params = new URLSearchParams(location.search);
+    const relayDefault = "http://172.18.133.111:4443";
+
+    const relayInput = document.getElementById("relayUrl");
+    const leftPathInput = document.getElementById("leftPath");
+    const rightPathInput = document.getElementById("rightPath");
+    const certHashInput = document.getElementById("certHash");
+    relayInput.value = params.get("relay") || relayDefault;
+    leftPathInput.value = params.get("left") || params.get("path") || "anon/xoq-can-can0/state";
+    rightPathInput.value = params.get("right") || "anon/xoq-can-can1/state";
+    certHashInput.value = params.get("certHash") || localStorage.getItem("moq-cert-hash") || "";
+    certHashInput.addEventListener("input", () => localStorage.setItem("moq-cert-hash", certHashInput.value));
+
+    const logEl = document.getElementById("log");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const queryBtn = document.getElementById("queryBtn");
+    const statusText = document.getElementById("statusText");
+
+    // ─── Joint definitions ────────────────────────────────
+    const JOINTS = [
+      { name: "J1", desc: "Shoulder pan",  canId: 0x11, color: 0xff6b35 },
+      { name: "J2", desc: "Shoulder lift", canId: 0x12, color: 0xff8c42 },
+      { name: "J3", desc: "Shoulder rot",  canId: 0x13, color: 0xffa94d },
+      { name: "J4", desc: "Elbow flex",    canId: 0x14, color: 0xffd166 },
+      { name: "J5", desc: "Wrist roll",    canId: 0x15, color: 0x06d6a0 },
+      { name: "J6", desc: "Wrist pitch",   canId: 0x16, color: 0x118ab2 },
+      { name: "J7", desc: "Wrist rot",     canId: 0x17, color: 0x073b4c },
+      { name: "Grip", desc: "Gripper",     canId: 0x18, color: 0x8338ec },
+    ];
+
+    // URDF joint names per arm
+    const L_JOINT_NAMES = ["L_J1", "L_J2", "L_J3", "L_J4", "L_J5", "L_J6", "L_J7"];
+    const R_JOINT_NAMES = ["R_J1", "R_J2", "R_J3", "R_J4", "R_J5", "R_J6", "R_J7"];
+
+    // Side panel shows left arm by default
+
+    // ─── State (per arm) ─────────────────────────────────
+    function makeJointState() {
+      return new Array(8).fill(null).map(() => ({
+        angle: 0, velocity: 0, torque: 0, tempMos: 0, tempRotor: 0, updated: false,
+      }));
+    }
+    const leftJointState = makeJointState();
+    const rightJointState = makeJointState();
+
+    let connections = [];  // active MoQ connections
+    let running = false;
+    let frameCount = 0;
+    let bytesTotal = 0;
+    let fpsCounter = 0;
+    let lastFpsTime = performance.now();
+
+    // Command publishing state (per arm)
+    const cmdState = { left: { conn: null, broadcast: null, track: null, group: null }, right: { conn: null, broadcast: null, track: null, group: null } };
+    let queryInterval = null;
+    let queryActive = false;
+    let motorIdx = 0;
+    let queryArm = 0; // alternates between arms
+
+    // ─── Logging ──────────────────────────────────────────
+    function log(msg, type = "info") {
+      const entry = document.createElement("div");
+      entry.className = `log-entry log-${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      if (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function formatBytes(b) {
+      if (b < 1024) return `${b} B`;
+      if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} K`;
+      return `${(b / (1024 * 1024)).toFixed(1)} M`;
+    }
+
+    function setStatus(s) { statusText.textContent = s; }
+
+    // ─── Build joint info panel ───────────────────────────
+    const jointRowsEl = document.getElementById("jointRows");
+    const tempRowsEl = document.getElementById("tempRows");
+    const jointEls = [];
+    const tempEls = [];
+
+    for (let i = 0; i < JOINTS.length; i++) {
+      const j = JOINTS[i];
+
+      // Joint angle row
+      const row = document.createElement("div");
+      row.className = "joint-row";
+      row.innerHTML = `
+        <span class="joint-label" style="color:#${j.color.toString(16).padStart(6,'0')}">${j.name}</span>
+        <span class="joint-angle" id="angle-${i}">0.0&deg;</span>
+        <span class="joint-vel" id="vel-${i}">0.0</span>
+        <span class="joint-tau" id="tau-${i}">0.0</span>
+      `;
+      jointRowsEl.appendChild(row);
+      jointEls.push({
+        angle: row.querySelector(`#angle-${i}`),
+        vel: row.querySelector(`#vel-${i}`),
+        tau: row.querySelector(`#tau-${i}`),
+      });
+
+      // Temperature row
+      const trow = document.createElement("div");
+      trow.style.cssText = "display:flex; justify-content:space-between; font-size:0.75rem; padding:0.15rem 0;";
+      trow.innerHTML = `
+        <span style="color:#${j.color.toString(16).padStart(6,'0')}">${j.name}</span>
+        <span><span id="tmos-${i}">-</span>&deg;C / <span id="trot-${i}">-</span>&deg;C</span>
+      `;
+      tempRowsEl.appendChild(trow);
+      tempEls.push({
+        mos: trow.querySelector(`#tmos-${i}`),
+        rot: trow.querySelector(`#trot-${i}`),
+      });
+    }
+
+    // ─── CAN Wire Format Parsing ──────────────────────────
+    // Format: [1B flags][4B can_id LE][1B data_len][0-64B data]
+    function parseCanFrame(buf) {
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      if (buf.length < 6) return null;
+
+      const flags = buf[0];
+      const canId = view.getUint32(1, true); // little-endian
+      const dataLen = buf[5];
+
+      if (buf.length < 6 + dataLen) return null;
+
+      const data = buf.slice(6, 6 + dataLen);
+      return { flags, canId, dataLen, data };
+    }
+
+    // Damiao motor state response parsing
+    // 8 bytes: [id][pos_h][pos_l][vel_h][vel_l|tau_h][tau_l][t_mos][t_rotor]
+    function parseDamiaoState(data) {
+      if (data.length < 8) return null;
+
+      const qRaw = (data[1] << 8) | data[2];
+      const velRaw = (data[3] << 4) | (data[4] >> 4);
+      const tauRaw = ((data[4] & 0x0F) << 8) | data[5];
+
+      // Position: linear map [0, 65535] -> [-12.5, 12.5] radians
+      const Q_MAX = 12.5;
+      const qRad = (qRaw / 65535.0) * (2 * Q_MAX) - Q_MAX;
+
+      // Velocity: linear map [0, 4095] -> [-45, 45] rad/s
+      const V_MAX = 45.0;
+      const vel = (velRaw / 4095.0) * (2 * V_MAX) - V_MAX;
+
+      // Torque: linear map [0, 4095] -> [-18, 18] Nm
+      const T_MAX = 18.0;
+      const tau = (tauRaw / 4095.0) * (2 * T_MAX) - T_MAX;
+
+      const tempMos = data[6];
+      const tempRotor = data[7];
+
+      return { qRad, vel, tau, tempMos, tempRotor };
+    }
+
+    // ─── Connect options helper ─────────────────────────
+    function buildConnectOpts() {
+      const certHash = certHashInput.value.trim();
+      const opts = {};
+      if (certHash) {
+        const hex = certHash.replace(/[^0-9a-fA-F]/g, '');
+        const hashBytes = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < hashBytes.length; i++) hashBytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+        opts.webtransport = {
+          serverCertificateHashes: [{ algorithm: "sha-256", value: hashBytes.buffer }],
+        };
+        log(`Using cert hash: ${hex.slice(0, 16)}...`, "data");
+      }
+      return opts;
+    }
+
+    // ─── Motor Query Commands ────────────────────────────
+    // Damiao MIT protocol: zero-torque command (p_des=0, v_des=0, kp=0, kd=0, t_ff=0)
+    // Queries motor state without applying any torque or changing enable state
+    function encodeMitZeroTorque() {
+      // Position: 0 rad → raw = (0 + 12.5) / 25.0 * 65535 = 32768 = 0x8000
+      // Velocity: 0 → raw = (0 + 45) / 90.0 * 4095 = 2048 = 0x800
+      // Kp: 0, Kd: 0
+      // Torque: 0 → raw = (0 + 18) / 36.0 * 4095 = 2048 = 0x800
+      const p = 0x8000, v = 0x800, kp = 0, kd = 0, t = 0x800;
+      return new Uint8Array([
+        p >> 8, p & 0xFF,
+        v >> 4,
+        ((v & 0xF) << 4) | (kp >> 8),
+        kp & 0xFF,
+        kd >> 4,
+        ((kd & 0xF) << 4) | (t >> 8),
+        t & 0xFF,
+      ]);
+    }
+
+    // Wire-encode a CAN frame: [1B flags][4B can_id LE][1B data_len][data]
+    function encodeCanFrame(canId, data) {
+      const buf = new Uint8Array(6 + data.length);
+      buf[0] = 0x00;  // flags: standard CAN
+      buf[1] = canId & 0xFF;
+      buf[2] = (canId >> 8) & 0xFF;
+      buf[3] = (canId >> 16) & 0xFF;
+      buf[4] = (canId >> 24) & 0xFF;
+      buf[5] = data.length;
+      buf.set(data, 6);
+      return buf;
+    }
+
+    // Connect command publisher for one arm
+    async function connectCmdArm(label, statePath) {
+      const relay = relayInput.value;
+      const basePath = statePath.replace(/\/state$/, "");
+      const cmdUrl = `${relay}/${basePath}/commands`;
+      const cs = cmdState[label];
+
+      log(`[${label}] Connecting commands to ${cmdUrl}...`);
+      const connectOpts = buildConnectOpts();
+      cs.conn = await Promise.race([
+        Moq.Connection.connect(new URL(cmdUrl), connectOpts),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label}] Command connection timeout`)), 8000)),
+      ]);
+      cs.broadcast = new Moq.Broadcast();
+      cs.conn.publish(Moq.Path.from(""), cs.broadcast);
+
+      log(`[${label}] Waiting for CAN server to subscribe (10s)...`);
+      const request = await Promise.race([
+        cs.broadcast.requested(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label}] No subscriber after 10s — is moq-can-server running?`)), 10000)),
+      ]);
+      if (!request) { log(`[${label}] Command broadcast closed`, "error"); return; }
+      cs.track = request.track;
+      log(`[${label}] Command track active`, "success");
+    }
+
+    async function startQueryLoop() {
+      const leftPath = leftPathInput.value.trim();
+      const rightPath = rightPathInput.value.trim();
+
+      // Connect command publishers for active arms
+      const promises = [];
+      if (leftPath) promises.push(connectCmdArm("left", leftPath));
+      if (rightPath) promises.push(connectCmdArm("right", rightPath));
+      await Promise.all(promises);
+
+      const mitCmd = encodeMitZeroTorque();
+      motorIdx = 0;
+      queryArm = 0;
+
+      // Build list of active command tracks
+      const activeTracks = [];
+      if (cmdState.left.track) activeTracks.push(cmdState.left);
+      if (cmdState.right.track) activeTracks.push(cmdState.right);
+      if (activeTracks.length === 0) { log("No command tracks connected", "error"); return; }
+
+      const rateHz = parseInt(document.getElementById("queryRate").value) || 200;
+      const intervalMs = Math.max(1, Math.round(1000 / rateHz));
+
+      queryInterval = setInterval(() => {
+        const cs = activeTracks[queryArm % activeTracks.length];
+        if (!cs.track) return;
+        const canId = motorIdx + 1;  // 0x01-0x08
+        const frame = encodeCanFrame(canId, mitCmd);
+        cs.group = cs.track.appendGroup();
+        cs.group.writeFrame(frame);
+        cs.group.close();
+        motorIdx = (motorIdx + 1) % 8;
+        if (motorIdx === 0) queryArm++;
+      }, intervalMs);
+
+      log(`Query loop started at ${rateHz}Hz (${activeTracks.length} arm${activeTracks.length > 1 ? "s" : ""})`, "success");
+    }
+
+    function stopQueryLoop() {
+      if (queryInterval) { clearInterval(queryInterval); queryInterval = null; }
+      for (const label of ["left", "right"]) {
+        const cs = cmdState[label];
+        cs.group = null;
+        if (cs.track) { try { cs.track.close(); } catch (e) {} cs.track = null; }
+        if (cs.broadcast) { try { cs.broadcast.close(); } catch (e) {} cs.broadcast = null; }
+        if (cs.conn) { try { cs.conn.close(); } catch (e) {} cs.conn = null; }
+      }
+      log("Query loop stopped");
+    }
+
+    // ─── Three.js Scene ───────────────────────────────────
+    const canvas = document.getElementById("threeCanvas");
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setClearColor(0x1a1a2e);
+    } catch (e) {
+      log(`WebGL not available: ${e.message} (3D disabled, MoQ still works)`, "error");
+      renderer = null;
+    }
+
+    const scene = new THREE.Scene();
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+    const dirLight2 = new THREE.DirectionalLight(0x4488ff, 0.3);
+    dirLight2.position.set(-5, 3, -5);
+    scene.add(dirLight2);
+
+    // Camera — bimanual model: ~0.7m body + arms extending above
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
+    camera.position.set(1.0, 0.8, 1.2);
+    camera.lookAt(0, 0.4, 0);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.target.set(0, 0.4, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.update();
+
+    // Ground grid (2m x 2m, 20 divisions = 10cm each)
+    const gridHelper = new THREE.GridHelper(2, 20, 0x333355, 0x222244);
+    scene.add(gridHelper);
+
+    // Axes helper
+    const axesHelper = new THREE.AxesHelper(0.1);
+    scene.add(axesHelper);
+
+    // ─── Load URDF model ────────────────────────────────
+    let robot = null;
+
+    const urdfLoader = new URDFLoader();
+    urdfLoader.loadMeshCb = (path, manager, done) => {
+      // Mesh paths resolve relative to URDF → /assets/meshes/...
+      // Vite proxy forwards these to openarm.dev (avoids CORS)
+      if (path.endsWith(".stl")) {
+        new STLLoader(manager).load(path, geom => {
+          done(new THREE.Mesh(geom, new THREE.MeshPhongMaterial()));
+        }, null, err => done(null, err));
+      } else if (path.endsWith(".dae")) {
+        new ColladaLoader(manager).load(path, result => done(result.scene), null, err => done(null, err));
+      } else {
+        done(null, new Error(`Unknown mesh format: ${path}`));
+      }
+    };
+
+    setStatus("Loading 3D model...");
+    log("Loading URDF model...");
+    urdfLoader.load("./assets/openarm_v10.urdf", result => {
+      robot = result;
+      // URDF uses Z-up; Three.js uses Y-up — rotate the whole robot
+      robot.rotation.x = -Math.PI / 2;
+      scene.add(robot);
+      setStatus("Idle");
+      log("3D model loaded", "success");
+    }, undefined, err => {
+      log(`URDF load error: ${err}`, "error");
+      setStatus("Model load failed");
+    });
+
+    // ─── Apply joint angles (both arms) ──────────────────
+    function updateArmPose() {
+      if (!robot) return;
+      for (let i = 0; i < 7; i++) {
+        if (robot.joints[L_JOINT_NAMES[i]]) robot.joints[L_JOINT_NAMES[i]].setJointValue(leftJointState[i].angle);
+        if (robot.joints[R_JOINT_NAMES[i]]) robot.joints[R_JOINT_NAMES[i]].setJointValue(rightJointState[i].angle);
+      }
+    }
+
+    // ─── Update UI ────────────────────────────────────────
+    function updatePanel() {
+      const jointState = leftPathInput.value.trim() ? leftJointState : rightJointState;
+      for (let i = 0; i < JOINTS.length; i++) {
+        const s = jointState[i];
+        const deg = (s.angle * 180 / Math.PI).toFixed(1);
+        jointEls[i].angle.innerHTML = `${deg}&deg;`;
+        jointEls[i].vel.textContent = s.velocity.toFixed(1);
+        jointEls[i].tau.textContent = s.torque.toFixed(1);
+        tempEls[i].mos.textContent = s.tempMos;
+        tempEls[i].rot.textContent = s.tempRotor;
+      }
+
+      document.getElementById("frameCount").textContent = frameCount;
+      document.getElementById("bytesReceived").textContent = formatBytes(bytesTotal);
+
+      // FPS calculation
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        document.getElementById("canFps").textContent = fpsCounter;
+        fpsCounter = 0;
+        lastFpsTime = now;
+      }
+
+      document.getElementById("lastUpdate").textContent =
+        new Date().toLocaleTimeString().split(" ")[0];
+    }
+
+    // ─── Resize handler ───────────────────────────────────
+    function onResize() {
+      if (!renderer) return;
+      const container = canvas.parentElement;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+
+    window.addEventListener("resize", onResize);
+    // Initial size set after first frame
+    requestAnimationFrame(onResize);
+
+    // ─── Render loop ──────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      if (!renderer) return;
+      controls.update();
+      updateArmPose();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ─── Subscribe to one arm's CAN stream ────────────────
+    async function subscribeArm(label, path, jointState) {
+      const relay = relayInput.value;
+      const fullUrl = `${relay}/${path}`;
+      log(`[${label}] Connecting to ${fullUrl}...`);
+
+      const connectOpts = buildConnectOpts();
+      const conn = await Promise.race([
+        Moq.Connection.connect(new URL(fullUrl), connectOpts),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label}] Connection timeout`)), 8000)),
+      ]);
+      connections.push(conn);
+      log(`[${label}] Connected`, "success");
+
+      const broadcast = conn.consume(Moq.Path.from(""));
+      const track = broadcast.subscribe("can", 0);
+      log(`[${label}] Subscribed to 'can' track`, "success");
+
+      while (running) {
+        const group = await track.nextGroup();
+        if (!group) { log(`[${label}] Track ended`); break; }
+        while (running) {
+          const frame = await group.readFrame();
+          if (!frame) break;
+          const bytes = new Uint8Array(frame);
+          bytesTotal += bytes.length;
+          frameCount++;
+          fpsCounter++;
+          const parsed = parseCanFrame(bytes);
+          if (!parsed) continue;
+          const jointIdx = JOINTS.findIndex(j => j.canId === parsed.canId);
+          if (jointIdx < 0) continue;
+          const state = parseDamiaoState(parsed.data);
+          if (!state) continue;
+          jointState[jointIdx].angle = state.qRad;
+          jointState[jointIdx].velocity = state.vel;
+          jointState[jointIdx].torque = state.tau;
+          jointState[jointIdx].tempMos = state.tempMos;
+          jointState[jointIdx].tempRotor = state.tempRotor;
+          jointState[jointIdx].updated = true;
+        }
+      }
+    }
+
+    // ─── MoQ Connection ───────────────────────────────────
+    startBtn.addEventListener("click", async () => {
+      try {
+        const leftPath = leftPathInput.value.trim();
+        const rightPath = rightPathInput.value.trim();
+        if (!leftPath && !rightPath) { log("No paths configured", "error"); return; }
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        running = true;
+        frameCount = 0;
+        bytesTotal = 0;
+        fpsCounter = 0;
+        connections = [];
+
+        setStatus("Connecting...");
+        log(`WebTransport: ${typeof WebTransport !== 'undefined' ? 'supported' : 'NOT supported'}`, "data");
+
+        // Fetch cert hash for diagnostics
+        const relay = relayInput.value;
+        const certHash = certHashInput.value.trim();
+        if (!certHash) {
+          try {
+            const resp = await fetch(`${relay}/certificate.sha256`);
+            if (resp.ok) log(`Relay cert: ${(await resp.text()).trim().slice(0, 32)}...`, "data");
+          } catch (e) {}
+        }
+
+        // Subscribe to both arms concurrently
+        const subs = [];
+        if (leftPath) subs.push(subscribeArm("left", leftPath, leftJointState));
+        if (rightPath) subs.push(subscribeArm("right", rightPath, rightJointState));
+
+        queryBtn.disabled = false;
+        setStatus("Streaming");
+
+        await Promise.all(subs);
+        setStatus("Ended");
+      } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        console.error(e);
+        setStatus("Error");
+      } finally {
+        if (queryActive) {
+          stopQueryLoop();
+          queryActive = false;
+          queryBtn.classList.remove("active");
+          queryBtn.textContent = "Query Motors";
+        }
+        queryBtn.disabled = true;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      running = false;
+      if (queryActive) {
+        stopQueryLoop();
+        queryActive = false;
+        queryBtn.classList.remove("active");
+        queryBtn.textContent = "Query Motors";
+      }
+      queryBtn.disabled = true;
+      setStatus("Stopping...");
+      for (const conn of connections) { try { conn.close(); } catch (e) {} }
+      connections = [];
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      setStatus("Disconnected");
+      log("Disconnected", "success");
+    });
+
+    queryBtn.addEventListener("click", async () => {
+      if (!queryActive) {
+        queryBtn.disabled = true;
+        queryBtn.textContent = "Starting...";
+        try {
+          await startQueryLoop();
+          queryActive = true;
+          queryBtn.classList.add("active");
+          queryBtn.textContent = "Stop Query";
+          queryBtn.disabled = false;
+        } catch (e) {
+          log(`Query start error: ${e.message}`, "error");
+          console.error(e);
+          queryBtn.textContent = "Query Motors";
+          queryBtn.disabled = false;
+        }
+      } else {
+        stopQueryLoop();
+        queryActive = false;
+        queryBtn.classList.remove("active");
+        queryBtn.textContent = "Query Motors";
+      }
+    });
+
+    // Periodic panel update
+    setInterval(updatePanel, 100);
+
+    log("Ready. Click Connect to start.", "info");
+
+    // Auto-connect if query params provided
+    if (params.has("left") || params.has("right") || params.has("path")) {
+      log("Auto-connecting from query params...", "info");
+      startBtn.click();
+    }
+  </script>
+</body>
+</html>

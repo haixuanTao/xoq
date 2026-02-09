@@ -1,0 +1,3 @@
+# STL meshes downloaded from openarm.dev (~14MB)
+# Run: curl script or see js/examples/assets/download_meshes.sh
+*.stl
