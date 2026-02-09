@@ -75,7 +75,7 @@ Robot Hardware          Network              Clients
 Server (on the machine with the camera):
 
 ```bash
-cargo run --example camera_server --features "iroh,camera-macos,vtenc" -- 0 --h264
+cargo run --bin camera-server --features "iroh,camera-macos,vtenc" -- 0 --h264
 # Linux Nvidia: --features "iroh,camera,nvenc"
 ```
 
@@ -98,7 +98,7 @@ cap.release()
 Server:
 
 ```bash
-cargo run --example serial_server --features "iroh,serial" -- /dev/ttyUSB0 1000000
+cargo run --bin serial-server --features "iroh,serial" -- /dev/ttyUSB0 1000000
 ```
 
 Python client:
@@ -118,7 +118,7 @@ port.close()
 Server (Linux with NVIDIA GPU + RealSense camera):
 
 ```bash
-cargo run --example realsense_server --features realsense -- \
+cargo run --bin realsense-server --features realsense -- \
   --relay https://your-relay:4443 --path anon/realsense
 ```
 
@@ -138,7 +138,7 @@ Open `examples/realsense_viewer.html` for 2D playback or `examples/realsense_poi
 Server (macOS with Voice Processing IO — AEC/noise suppression/AGC):
 
 ```bash
-cargo run --example audio_server --features "iroh,audio-macos"
+cargo run --bin audio-server --features "iroh,audio-macos"
 # Linux/Windows (cpal backend): --features "iroh,audio"
 # Disable VPIO on macOS: --no-vpio
 ```
@@ -159,7 +159,7 @@ stream.close()
 Server:
 
 ```bash
-cargo run --example can_server --features "iroh,can" -- can0:fd
+cargo run --bin can-server --features "iroh,can" -- can0:fd
 ```
 
 Python client:
@@ -224,24 +224,31 @@ Feature flags for remote access: `serial-remote`, `camera-remote`, `can-remote`,
 
 Clients target macOS, Linux, and Windows. Future: C/C++ bindings via Rust ABI.
 
+### Server Binaries
+
+| Binary              | Description                                                 | Required Features                |
+| ------------------- | ----------------------------------------------------------- | -------------------------------- |
+| `camera-server`     | Streams local cameras to remote clients (JPEG or H.264)     | `iroh` + `camera`/`camera-macos` |
+| `serial-server`     | Bridges a local serial port for remote access               | `iroh`, `serial`                 |
+| `can-server`        | Bridges local CAN interfaces for remote access              | `iroh`, `can`                    |
+| `audio-server`      | Bridges local mic/speaker for remote access (VPIO on macOS) | `iroh`, `audio` / `audio-macos`  |
+| `realsense-server`  | Streams color + depth from RealSense over MoQ               | `realsense`                      |
+| `moq-can-server`    | CAN bridge over MoQ relay                                   | `can`                            |
+| `moq-serial-server` | Serial bridge over MoQ relay                                | `serial`                         |
+
 ### Examples
 
-| Example            | Description                                                | Required Features                |
-| ------------------ | ---------------------------------------------------------- | -------------------------------- |
-| `camera_server`    | Streams local cameras to remote clients (JPEG or H.264)    | `iroh` + `camera`/`camera-macos` |
-| `camera_client`    | Receives and displays frames from remote camera            | `iroh`, `camera`                 |
-| `camera_viewer.py` | Python OpenCV viewer for camera streams                    | (Python)                         |
-| `serial_server`    | Bridges a local serial port for remote access              | `iroh`, `serial`                 |
-| `serial_client`    | Connects to a remote serial port                           | `iroh`, `serial`                 |
-| `can_server`       | Bridges local CAN interfaces for remote access             | `iroh`, `can`                    |
-| `can_client`       | Connects to a remote CAN interface                         | `iroh`, `can`                    |
-| `rustypot_remote`  | Drives STS3215 servos over a remote serial port (rustypot) | `iroh`, `serial`                 |
-| `so100_teleop`     | Teleoperate a remote SO-100 arm from a local leader arm    | `iroh`, `serial`                 |
-| `reachy_mini`      | Reachy Mini robot control over remote serial               | `iroh`, `serial`                 |
-| `audio_server`     | Bridges local mic/speaker for remote access (VPIO on macOS) | `iroh`, `audio` / `audio-macos`  |
-| `audio_client`     | Connects to a remote audio server (bidirectional)          | `audio-remote`                   |
-| `realsense_server` | Streams color + depth from RealSense over MoQ              | `realsense`                      |
-| `moq_test`         | MoQ relay publish/subscribe diagnostic test                | —                                |
+| Example            | Description                                                | Required Features  |
+| ------------------ | ---------------------------------------------------------- | ------------------ |
+| `camera_client`    | Receives and displays frames from remote camera            | `camera-remote`    |
+| `camera_viewer.py` | Python OpenCV viewer for camera streams                    | (Python)           |
+| `serial_client`    | Connects to a remote serial port                           | `iroh`, `serial`   |
+| `can_client`       | Connects to a remote CAN interface                         | `iroh`, `can`      |
+| `audio_client`     | Connects to a remote audio server (bidirectional)          | `audio-remote`     |
+| `rustypot_remote`  | Drives STS3215 servos over a remote serial port (rustypot) | `iroh`, `serial`   |
+| `so100_teleop`     | Teleoperate a remote SO-100 arm from a local leader arm    | `iroh`, `serial`   |
+| `reachy_mini`      | Reachy Mini robot control over remote serial               | `iroh`, `serial`   |
+| `moq_test`         | MoQ relay publish/subscribe diagnostic test                | —                  |
 
 ### ALPN Protocols
 

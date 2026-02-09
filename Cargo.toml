@@ -85,9 +85,9 @@ core-media-sys = { version = "0.1.0", optional = true }
 rustypot = "1.4.2"
 ctrlc = "3"
 
-[[example]]
-name = "serial_server"
-path = "examples/serial_server.rs"
+[[bin]]
+name = "serial-server"
+path = "src/bin/serial_server.rs"
 required-features = ["iroh", "serial"]
 
 [[example]]
@@ -110,9 +110,9 @@ name = "reachy_mini"
 path = "examples/reachy_mini.rs"
 required-features = ["iroh", "serial"]
 
-[[example]]
-name = "can_server"
-path = "examples/can_server.rs"
+[[bin]]
+name = "can-server"
+path = "src/bin/can_server.rs"
 required-features = ["iroh", "can"]
 
 [[example]]
@@ -120,9 +120,9 @@ name = "can_client"
 path = "examples/can_client.rs"
 required-features = ["iroh", "can"]
 
-[[example]]
-name = "camera_server"
-path = "examples/camera_server.rs"
+[[bin]]
+name = "camera-server"
+path = "src/bin/camera_server.rs"
 required-features = ["iroh"]
 
 [[example]]
@@ -130,14 +130,14 @@ name = "camera_client"
 path = "examples/camera_client.rs"
 required-features = ["camera-remote"]
 
-[[example]]
-name = "moq_can_server"
-path = "examples/moq_can_server.rs"
+[[bin]]
+name = "moq-can-server"
+path = "src/bin/moq_can_server.rs"
 required-features = ["can"]
 
-[[example]]
-name = "moq_serial_server"
-path = "examples/moq_serial_server.rs"
+[[bin]]
+name = "moq-serial-server"
+path = "src/bin/moq_serial_server.rs"
 required-features = ["serial"]
 
 [[example]]
@@ -153,9 +153,9 @@ name = "iroh_latency_test"
 path = "examples/iroh_latency_test.rs"
 required-features = ["iroh"]
 
-[[example]]
-name = "audio_server"
-path = "examples/audio_server.rs"
+[[bin]]
+name = "audio-server"
+path = "src/bin/audio_server.rs"
 required-features = ["iroh", "audio"]
 
 [[example]]
@@ -163,8 +163,8 @@ name = "audio_client"
 path = "examples/audio_client.rs"
 required-features = ["audio-remote"]
 
-[[example]]
-name = "realsense_server"
-path = "examples/realsense_server.rs"
+[[bin]]
+name = "realsense-server"
+path = "src/bin/realsense_server.rs"
 required-features = ["realsense"]
 
