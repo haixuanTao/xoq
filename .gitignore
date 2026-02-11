@@ -32,6 +32,9 @@ serial_bridge_key
 .env
 .env.*
 
+# Build output
+js/dist-pages/
+
 # IDE
 .idea/
 .vscode/

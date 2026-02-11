@@ -184,6 +184,10 @@
       <input type="text" id="rightPath" style="width:200px;" />
     </label>
     <label>
+      Depth:
+      <input type="text" id="depthPath" style="width:180px;" />
+    </label>
+    <label>
       Cert hash:
       <input type="text" id="certHash" placeholder="sha256 hex (optional)" style="width:140px;" />
     </label>
@@ -195,28 +199,69 @@
     <button id="stopBtn" disabled>Disconnect</button>
     <button id="queryBtn" disabled>Query Motors</button>
     <span id="statusText" style="color:#888; font-size:0.8rem;">Idle</span>
+    <span style="border-left:1px solid #444; height:1.2rem;"></span>
+    <button id="viewToggle" style="background:#2a2a4a; color:#aaa; border:1px solid #444;">Camera</button>
+    <label style="font-size:0.75rem;">Pt size: <input type="range" id="ptSize" min="0.5" max="8" step="0.5" value="2" style="width:60px; vertical-align:middle;" /></label>
+    <span style="font-size:0.7rem; color:#666;">depth: 1mm</span>
+    <span style="border-left:1px solid #444; height:1.2rem;"></span>
+    <label style="font-size:0.75rem;">Cam X:<input type="number" id="camX" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <label style="font-size:0.75rem;">Y:<input type="number" id="camY" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <label style="font-size:0.75rem;">Z:<input type="number" id="camZ" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <label style="font-size:0.75rem;">R:<input type="number" id="camRoll" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <label style="font-size:0.75rem;">P:<input type="number" id="camPitch" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <label style="font-size:0.75rem;">Yw:<input type="number" id="camYaw" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
   </div>
 
   <div class="main">
-    <div class="canvas-container">
+    <div class="canvas-container" id="view3d">
       <canvas id="threeCanvas"></canvas>
       <div class="canvas-overlay">
         <span>Drag to orbit / Scroll to zoom / Right-drag to pan</span>
       </div>
     </div>
+    <div id="viewCamera" style="display:none; flex:1; min-width:0; background:#000; position:relative;">
+      <div style="display:flex; height:100%; gap:2px; padding:2px;">
+        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+          <div style="font-size:0.65rem; color:#666; padding:2px 4px;">Color</div>
+          <canvas id="colorFullCanvas" style="flex:1; width:100%; object-fit:contain; background:#111; border-radius:3px;"></canvas>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+          <div style="font-size:0.65rem; color:#666; padding:2px 4px;">Depth</div>
+          <canvas id="depthFullCanvas" style="flex:1; width:100%; object-fit:contain; background:#111; border-radius:3px;"></canvas>
+        </div>
+      </div>
+    </div>
 
     <div class="side-panel">
       <div class="panel-section">
-        <h3>Joint Angles</h3>
+        <h3>Left Arm</h3>
         <div class="joint-row" style="font-size:0.65rem; color:#666;">
           <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Vel</span><span style="text-align:right;">Tau</span>
         </div>
-        <div id="jointRows"></div>
+        <div id="leftJointRows"></div>
       </div>
 
       <div class="panel-section">
-        <h3>Temperatures</h3>
-        <div id="tempRows"></div>
+        <h3>Right Arm</h3>
+        <div class="joint-row" style="font-size:0.65rem; color:#666;">
+          <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Vel</span><span style="text-align:right;">Tau</span>
+        </div>
+        <div id="rightJointRows"></div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Camera</h3>
+        <div style="display:flex; gap:4px;">
+          <div style="flex:1; text-align:center;">
+            <div style="font-size:0.65rem; color:#666; margin-bottom:2px;">Color</div>
+            <canvas id="colorPreview" width="128" height="96" style="width:100%; border-radius:3px; background:#000;"></canvas>
+          </div>
+          <div style="flex:1; text-align:center;">
+            <div style="font-size:0.65rem; color:#666; margin-bottom:2px;">Depth</div>
+            <canvas id="depthPreview" width="128" height="96" style="width:100%; border-radius:3px; background:#000;"></canvas>
+          </div>
+        </div>
+        <div style="font-size:0.7rem; color:#888; margin-top:4px;" id="pcStats">No depth stream</div>
       </div>
 
       <div class="panel-section">
@@ -245,6 +290,10 @@
 
   <div class="log-panel" id="log"></div>
 
+  <div style="position:fixed; top:-9999px;">
+    <video id="colorVideo" autoplay muted playsinline></video>
+  </div>
+
   <script type="module">
     import * as THREE from "three";
     import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -253,19 +302,38 @@
     import URDFLoader from "urdf-loader";
     import * as Moq from "@moq/lite";
 
-    // ─── Config ──────────────────────────────────────────
+    // ─── Config (query params > localStorage > defaults) ──
     const params = new URLSearchParams(location.search);
-    const relayDefault = "http://172.18.133.111:4443";
+    const LS_PREFIX = "openarm.";
+    const ls = (k, fallback) => params.get(k) || localStorage.getItem(LS_PREFIX + k) || fallback;
 
-    const relayInput = document.getElementById("relayUrl");
+    const relayInput    = document.getElementById("relayUrl");
     const leftPathInput = document.getElementById("leftPath");
-    const rightPathInput = document.getElementById("rightPath");
+    const rightPathInput= document.getElementById("rightPath");
+    const depthPathInput= document.getElementById("depthPath");
     const certHashInput = document.getElementById("certHash");
-    relayInput.value = params.get("relay") || relayDefault;
-    leftPathInput.value = params.get("left") || params.get("path") || "anon/xoq-can-can0/state";
-    rightPathInput.value = params.get("right") || "anon/xoq-can-can1/state";
-    certHashInput.value = params.get("certHash") || localStorage.getItem("moq-cert-hash") || "";
-    certHashInput.addEventListener("input", () => localStorage.setItem("moq-cert-hash", certHashInput.value));
+
+    relayInput.value     = ls("relay", "https://cdn.1ms.ai");
+    leftPathInput.value  = params.get("left") || params.get("path") || localStorage.getItem(LS_PREFIX + "left") || "anon/xoq-can-can0/state";
+    rightPathInput.value = ls("right", "anon/xoq-can-can1/state");
+    depthPathInput.value = ls("depth", "");
+    certHashInput.value  = ls("certHash", "");
+
+    // Persist all config inputs on change
+    const configInputs = {
+      relay: relayInput, left: leftPathInput, right: rightPathInput,
+      depth: depthPathInput, certHash: certHashInput,
+      camX: document.getElementById("camX"), camY: document.getElementById("camY"),
+      camZ: document.getElementById("camZ"), camRoll: document.getElementById("camRoll"),
+      camPitch: document.getElementById("camPitch"), camYaw: document.getElementById("camYaw"),
+      queryRate: document.getElementById("queryRate"),
+      ptSize: document.getElementById("ptSize"),
+    };
+    for (const [key, el] of Object.entries(configInputs)) {
+      const saved = localStorage.getItem(LS_PREFIX + key);
+      if (saved && !params.has(key)) el.value = saved;
+      el.addEventListener("input", () => localStorage.setItem(LS_PREFIX + key, el.value));
+    }
 
     const logEl = document.getElementById("log");
     const startBtn = document.getElementById("startBtn");
@@ -332,44 +400,31 @@
 
     function setStatus(s) { statusText.textContent = s; }
 
-    // ─── Build joint info panel ───────────────────────────
-    const jointRowsEl = document.getElementById("jointRows");
-    const tempRowsEl = document.getElementById("tempRows");
-    const jointEls = [];
-    const tempEls = [];
-
-    for (let i = 0; i < JOINTS.length; i++) {
-      const j = JOINTS[i];
-
-      // Joint angle row
-      const row = document.createElement("div");
-      row.className = "joint-row";
-      row.innerHTML = `
-        <span class="joint-label" style="color:#${j.color.toString(16).padStart(6,'0')}">${j.name}</span>
-        <span class="joint-angle" id="angle-${i}">0.0&deg;</span>
-        <span class="joint-vel" id="vel-${i}">0.0</span>
-        <span class="joint-tau" id="tau-${i}">0.0</span>
-      `;
-      jointRowsEl.appendChild(row);
-      jointEls.push({
-        angle: row.querySelector(`#angle-${i}`),
-        vel: row.querySelector(`#vel-${i}`),
-        tau: row.querySelector(`#tau-${i}`),
-      });
-
-      // Temperature row
-      const trow = document.createElement("div");
-      trow.style.cssText = "display:flex; justify-content:space-between; font-size:0.75rem; padding:0.15rem 0;";
-      trow.innerHTML = `
-        <span style="color:#${j.color.toString(16).padStart(6,'0')}">${j.name}</span>
-        <span><span id="tmos-${i}">-</span>&deg;C / <span id="trot-${i}">-</span>&deg;C</span>
-      `;
-      tempRowsEl.appendChild(trow);
-      tempEls.push({
-        mos: trow.querySelector(`#tmos-${i}`),
-        rot: trow.querySelector(`#trot-${i}`),
-      });
+    // ─── Build joint info panel (both arms) ────────────────
+    function buildJointRows(containerId, prefix) {
+      const container = document.getElementById(containerId);
+      const els = [];
+      for (let i = 0; i < JOINTS.length; i++) {
+        const j = JOINTS[i];
+        const row = document.createElement("div");
+        row.className = "joint-row";
+        row.innerHTML = `
+          <span class="joint-label" style="color:#${j.color.toString(16).padStart(6,'0')}">${j.name}</span>
+          <span class="joint-angle" id="${prefix}-angle-${i}">0.0&deg;</span>
+          <span class="joint-vel" id="${prefix}-vel-${i}">0.0</span>
+          <span class="joint-tau" id="${prefix}-tau-${i}">0.0</span>
+        `;
+        container.appendChild(row);
+        els.push({
+          angle: row.querySelector(`#${prefix}-angle-${i}`),
+          vel: row.querySelector(`#${prefix}-vel-${i}`),
+          tau: row.querySelector(`#${prefix}-tau-${i}`),
+        });
+      }
+      return els;
     }
+    const leftJointEls = buildJointRows("leftJointRows", "l");
+    const rightJointEls = buildJointRows("rightJointRows", "r");
 
     // ─── CAN Wire Format Parsing ──────────────────────────
     // Format: [1B flags][4B can_id LE][1B data_len][0-64B data]
@@ -428,6 +483,418 @@
         log(`Using cert hash: ${hex.slice(0, 16)}...`, "data");
       }
       return opts;
+    }
+
+    // ─── RealSense: raw WebTransport MoQ subscriber ──────
+    // Ported directly from examples/realsense_pointcloud.html
+    function rsConcat(...arrs) {
+      const len = arrs.reduce((s, a) => s + a.length, 0);
+      const r = new Uint8Array(len); let o = 0;
+      for (const a of arrs) { r.set(a, o); o += a.length; }
+      return r;
+    }
+    function rsEncodeVarInt(v) {
+      if (v < 0x40) return new Uint8Array([v]);
+      if (v < 0x4000) return new Uint8Array([0x40 | (v >> 8), v & 0xff]);
+      if (v < 0x40000000) return new Uint8Array([
+        0x80 | ((v >>> 24) & 0x3f), (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff
+      ]);
+      const hi = Math.floor(v / 0x100000000), lo = v >>> 0;
+      return new Uint8Array([
+        0xc0 | ((hi >>> 24) & 0x3f), (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff,
+        (lo >>> 24) & 0xff, (lo >>> 16) & 0xff, (lo >>> 8) & 0xff, lo & 0xff
+      ]);
+    }
+    function rsEncodeString(s) { const b = new TextEncoder().encode(s); return rsConcat(rsEncodeVarInt(b.length), b); }
+    function rsSizePrefix(p) { return rsConcat(rsEncodeVarInt(p.length), p); }
+
+    class RsBufReader {
+      constructor(d) { this.d = d; this.p = 0; }
+      readVarInt() {
+        const f = this.d[this.p], tag = (f & 0xc0) >> 6, len = 1 << tag;
+        let v = f & 0x3f;
+        for (let i = 1; i < len; i++) v = v * 256 + this.d[this.p + i];
+        this.p += len; return v;
+      }
+      readBytes(n) { const r = this.d.slice(this.p, this.p + n); this.p += n; return r; }
+      readString() { const n = this.readVarInt(); return new TextDecoder().decode(this.readBytes(n)); }
+    }
+
+    class RsStreamReader {
+      constructor(r) { this.reader = r; this.buf = new Uint8Array(0); this.pos = 0; }
+      avail() { return this.buf.length - this.pos; }
+      async ensure(n) {
+        while (this.avail() < n) {
+          const { value, done } = await this.reader.read();
+          if (done) throw new Error('Stream ended');
+          const v = new Uint8Array(value);
+          const nb = new Uint8Array(this.avail() + v.length);
+          nb.set(this.buf.subarray(this.pos)); nb.set(v, this.avail());
+          this.buf = nb; this.pos = 0;
+        }
+      }
+      async readVarInt() {
+        await this.ensure(1);
+        const f = this.buf[this.pos], tag = (f & 0xc0) >> 6, len = 1 << tag;
+        await this.ensure(len);
+        let v = f & 0x3f;
+        for (let i = 1; i < len; i++) v = v * 256 + this.buf[this.pos + i];
+        this.pos += len; return v;
+      }
+      async readBytes(n) { await this.ensure(n); const r = this.buf.slice(this.pos, this.pos + n); this.pos += n; return r; }
+      async readMessage() { const s = await this.readVarInt(); return await this.readBytes(s); }
+    }
+
+    function rsEncodeClientSetup() {
+      return rsSizePrefix(rsConcat(
+        rsEncodeVarInt(2), rsEncodeVarInt(0xff0dad02), rsEncodeVarInt(0xff0dad01),
+        rsEncodeVarInt(0)
+      ));
+    }
+    function rsEncodeAnnouncePlease(pfx) { return rsSizePrefix(rsEncodeString(pfx)); }
+    function rsEncodeSubscribe(id, bc, tk, pri) {
+      return rsSizePrefix(rsConcat(rsEncodeVarInt(id), rsEncodeString(bc), rsEncodeString(tk), new Uint8Array([(pri+128)&0xff])));
+    }
+
+    class RsMoqSubscriber {
+      constructor() { this.transport = null; this.nextId = 0; this.handlers = new Map(); this.running = false; }
+      async connect(url, certHash) {
+        const opts = {};
+        if (certHash) opts.serverCertificateHashes = [{ algorithm: 'sha-256', value: (() => {
+          const hex = certHash.replace(/[^0-9a-fA-F]/g, '');
+          const b = new Uint8Array(hex.length / 2);
+          for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(i * 2, 2), 16);
+          return b.buffer;
+        })() }];
+        this.transport = new WebTransport(url, opts);
+        await this.transport.ready; this.running = true;
+        log('[depth] WebTransport connected', 'success');
+        this.transport.closed.then(() => { this.running = false; log('[depth] Transport closed'); })
+          .catch(e => { this.running = false; log(`[depth] Transport: ${e.message}`, 'error'); });
+        await this.setup();
+        this.receiveStreams();
+      }
+      async setup() {
+        const b = await this.transport.createBidirectionalStream();
+        const w = b.writable.getWriter(), r = new RsStreamReader(b.readable.getReader());
+        await w.write(rsConcat(rsEncodeVarInt(0), rsEncodeClientSetup()));
+        const msg = await r.readMessage(); const br = new RsBufReader(msg);
+        log(`[depth] Server version: 0x${br.readVarInt().toString(16)}`, 'data');
+      }
+      async waitBroadcast() {
+        const b = await this.transport.createBidirectionalStream();
+        const w = b.writable.getWriter(), r = new RsStreamReader(b.readable.getReader());
+        await w.write(rsConcat(rsEncodeVarInt(1), rsEncodeAnnouncePlease("")));
+        const msg = await r.readMessage(); const br = new RsBufReader(msg);
+        const cnt = br.readVarInt(), paths = [];
+        for (let i = 0; i < cnt; i++) paths.push(br.readString());
+        log(`[depth] Broadcasts: [${paths.map(p => `"${p}"`).join(', ')}]`, 'data');
+        if (cnt > 0) return paths[0];
+        log('[depth] Waiting for publisher...', 'info');
+        while (true) {
+          const m = await r.readMessage();
+          if (m[0] === 1) { const pbr = new RsBufReader(m.subarray(1)); return pbr.readString(); }
+        }
+      }
+      async subscribe(bc, tk, onData) {
+        const id = this.nextId++; this.handlers.set(id, onData);
+        const b = await this.transport.createBidirectionalStream();
+        const w = b.writable.getWriter(), r = new RsStreamReader(b.readable.getReader());
+        await w.write(rsConcat(rsEncodeVarInt(2), rsEncodeSubscribe(id, bc, tk, 0)));
+        await r.readMessage();
+        log(`[depth] Subscribed "${tk}" (id=${id})`, 'success'); return id;
+      }
+      async receiveStreams() {
+        const sr = this.transport.incomingUnidirectionalStreams.getReader();
+        while (this.running) {
+          try {
+            const { value, done } = await sr.read(); if (done) break;
+            this.handleData(value);
+          } catch (e) { if (this.running) log(`[depth] Recv: ${e.message}`, 'error'); break; }
+        }
+      }
+      async handleData(stream) {
+        try {
+          const r = new RsStreamReader(stream.getReader());
+          if (await r.readVarInt() !== 0) return;
+          const hdr = await r.readMessage(); const br = new RsBufReader(hdr);
+          const subId = br.readVarInt(); br.readVarInt();
+          const frame = await r.readMessage();
+          const h = this.handlers.get(subId); if (h) h(frame);
+        } catch {}
+      }
+      disconnect() { this.running = false; if (this.transport) { this.transport.close(); this.transport = null; } }
+    }
+
+    // ─── MSE Player (for RealSense video decoding) ───────
+    function detectCodec(data) {
+      const d = new Uint8Array(data), h = n => n.toString(16).padStart(2, '0').toUpperCase();
+      for (let i = 0; i < d.length - 11; i++) {
+        // H.264: avcC box (0x61766343)
+        if (d[i+4]===0x61 && d[i+5]===0x76 && d[i+6]===0x63 && d[i+7]===0x43) {
+          const o = i + 8; if (o + 4 <= d.length) return `avc1.${h(d[o+1])}${h(d[o+2])}${h(d[o+3])}`;
+        }
+        // AV1: av1C box (0x61763143)
+        if (d[i+4]===0x61 && d[i+5]===0x76 && d[i+6]===0x31 && d[i+7]===0x43) {
+          const o = i + 8; if (o + 4 <= d.length) {
+            const profile = (d[o+1] >> 5) & 0x7;
+            const level = d[o+1] & 0x1F;
+            const tier = (d[o+2] >> 7) & 1;
+            const highBitDepth = (d[o+2] >> 6) & 1;
+            const twelveBit = (d[o+2] >> 5) & 1;
+            const bitDepth = highBitDepth ? (twelveBit ? 12 : 10) : 8;
+            const levelStr = String(level).padStart(2, '0');
+            const tierChar = tier ? 'H' : 'M';
+            return `av01.${profile}.${levelStr}${tierChar}.${String(bitDepth).padStart(2, '0')}`;
+          }
+        }
+      }
+      return null;
+    }
+    function hasFtyp(d) { return d.length >= 8 && d[4]===0x66 && d[5]===0x74 && d[6]===0x79 && d[7]===0x70; }
+
+    // Find top-level MP4 box by type, return offset or -1
+    function findBoxOffset(data, type) {
+      const t = [type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3)];
+      let i = 0;
+      while (i < data.length - 8) {
+        const sz = (data[i]<<24)|(data[i+1]<<16)|(data[i+2]<<8)|data[i+3];
+        if (data[i+4]===t[0] && data[i+5]===t[1] && data[i+6]===t[2] && data[i+7]===t[3]) return i;
+        if (sz < 8) break;
+        i += sz;
+      }
+      return -1;
+    }
+
+    // Extract mdat box content from segment data
+    function findMdatContent(data) {
+      const i = findBoxOffset(data, 'mdat');
+      if (i < 0) return null;
+      const sz = (data[i]<<24)|(data[i+1]<<16)|(data[i+2]<<8)|data[i+3];
+      return data.subarray(i + 8, i + sz);
+    }
+
+    // Extract av1C box content (raw AV1CodecConfigurationRecord, without box header)
+    function extractAv1C(data) {
+      for (let i = 0; i < data.length - 11; i++) {
+        if (data[i+4]===0x61 && data[i+5]===0x76 && data[i+6]===0x31 && data[i+7]===0x43) {
+          const sz = (data[i]<<24)|(data[i+1]<<16)|(data[i+2]<<8)|data[i+3];
+          return data.slice(i + 8, i + sz);
+        }
+      }
+      return null;
+    }
+
+    // ─── WebCodecs depth decoder (10-bit precision) ──────
+    class DepthDecoder {
+      constructor() {
+        this.decoder = null; this.configured = false; this.configuredCodec = null;
+        this.latestY = null; // Uint16Array (10-bit) or Uint8Array (8-bit)
+        this.is10bit = false; this.width = 0; this.height = 0;
+        this.frameCount = 0; this.copyBuf = null;
+      }
+      onData(data) {
+        const d = new Uint8Array(data);
+        const isInit = hasFtyp(d);
+        if (isInit) {
+          // Only configure once (or reconfigure if codec changes)
+          if (!this.configured) {
+            const av1c = extractAv1C(d);
+            const codec = detectCodec(d);
+            if (av1c && codec) this.configure(codec, av1c);
+          }
+          const moofOff = findBoxOffset(d, 'moof');
+          if (moofOff >= 0) this.decodeSample(d.subarray(moofOff), true);
+        } else if (this.configured) {
+          this.decodeSample(d, false);
+        }
+      }
+      configure(codec, av1c) {
+        if (this.configuredCodec === codec) return; // already configured with same codec
+        if (this.decoder) try { this.decoder.close(); } catch {}
+        this.decoder = new VideoDecoder({
+          output: (frame) => this.processFrame(frame).catch(e => console.error('Depth frame error:', e)),
+          error: (e) => console.error('Depth decoder error:', e),
+        });
+        const desc = av1c.buffer.slice(av1c.byteOffset, av1c.byteOffset + av1c.byteLength);
+        // prefer-software gives us accessible pixel data (GPU frames are opaque with null format)
+        this.decoder.configure({ codec, description: desc, hardwareAcceleration: 'prefer-software' });
+        this.configured = true;
+        this.configuredCodec = codec;
+        log(`Depth WebCodecs: ${codec}`, "data");
+      }
+      decodeSample(segData, isKey) {
+        const mdat = findMdatContent(segData);
+        if (!mdat) return;
+        const ts = this.frameCount * (1000000 / 30);
+        this.decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: ts, data: mdat }));
+        this.frameCount++;
+      }
+      async processFrame(frame) {
+        try {
+          const w = frame.displayWidth, h = frame.displayHeight;
+          const ySize = w * h;
+          const fmt = frame.format; // e.g. "I420" (8-bit) or "I010" (10-bit) or null (GPU opaque)
+          if (!this.fmtLogged) { log(`Depth frame format: ${fmt}, ${w}x${h}`, "data"); this.fmtLogged = true; }
+
+          let is10bit = false;
+
+          if (fmt) {
+            // Software-decoded frame with known format — use copyTo for Y plane
+            // Chrome uses various names: I010, P010, I420P10, etc.
+            is10bit = fmt.includes('10');
+            const totalSize = frame.allocationSize();
+            if (!this.copyBuf || this.copyBuf.byteLength < totalSize) this.copyBuf = new ArrayBuffer(totalSize);
+            const layouts = await frame.copyTo(this.copyBuf);
+            const yOff = layouts[0].offset, yStride = layouts[0].stride;
+            if (is10bit) {
+              if (!this.latestY || this.latestY.length !== ySize) this.latestY = new Uint16Array(ySize);
+              const stride16 = yStride / 2;
+              const src = new Uint16Array(this.copyBuf);
+              if (stride16 === w) {
+                this.latestY.set(new Uint16Array(this.copyBuf, yOff, ySize));
+              } else {
+                for (let r = 0; r < h; r++) this.latestY.set(src.subarray(yOff/2 + r*stride16, yOff/2 + r*stride16 + w), r*w);
+              }
+            } else {
+              if (!this.latestY || this.latestY.length !== ySize) this.latestY = new Uint8Array(ySize);
+              const src = new Uint8Array(this.copyBuf);
+              if (yStride === w) {
+                this.latestY.set(new Uint8Array(this.copyBuf, yOff, ySize));
+              } else {
+                for (let r = 0; r < h; r++) this.latestY.set(src.subarray(yOff + r*yStride, yOff + r*yStride + w), r*w);
+              }
+            }
+          } else {
+            // GPU-opaque frame (format=null) — draw to canvas and extract R channel (8-bit)
+            if (!this.offCanvas || this.offCanvas.width !== w || this.offCanvas.height !== h) {
+              this.offCanvas = new OffscreenCanvas(w, h);
+              this.offCtx = this.offCanvas.getContext('2d', { willReadFrequently: true });
+            }
+            this.offCtx.drawImage(frame, 0, 0);
+            const rgba = this.offCtx.getImageData(0, 0, w, h).data;
+            if (!this.latestY || this.latestY.length !== ySize) this.latestY = new Uint8Array(ySize);
+            for (let i = 0; i < ySize; i++) this.latestY[i] = rgba[i * 4]; // R channel = grayscale
+            is10bit = false;
+            if (!this.canvasFallbackLogged) { log(`Depth: GPU frame, using canvas fallback (8-bit)`, "info"); this.canvasFallbackLogged = true; }
+          }
+
+          this.is10bit = is10bit; this.width = w; this.height = h;
+        } finally { frame.close(); }
+      }
+      destroy() {
+        if (this.decoder) try { this.decoder.close(); } catch {}
+        this.decoder = null; this.configured = false; this.latestY = null;
+      }
+    }
+
+    class MsePlayer {
+      constructor(videoEl, label) {
+        this.video = videoEl; this.label = label;
+        this.ms = null; this.sb = null; this.queue = []; this.ready = false;
+        this.frames = 0; this.seekIv = null;
+      }
+      onData(data) {
+        this.frames++;
+        if (!this.ready) {
+          if (!hasFtyp(data)) return;
+          const codec = detectCodec(data);
+          if (!codec) { log(`${this.label}: cannot detect codec`, "error"); return; }
+          this.initMse(codec, data); return;
+        }
+        this.enqueue(data);
+      }
+      initMse(codec, initData) {
+        const mime = `video/mp4; codecs="${codec}"`;
+        log(`${this.label}: ${mime}`, "data");
+        if (!MediaSource.isTypeSupported(mime)) { log(`${this.label}: unsupported`, "error"); return; }
+        this.ms = new MediaSource();
+        this.video.src = URL.createObjectURL(this.ms);
+        this.ms.addEventListener('sourceopen', () => {
+          try {
+            this.sb = this.ms.addSourceBuffer(mime);
+            this.sb.mode = 'segments';
+            this.sb.addEventListener('updateend', () => this.flush());
+            this.ready = true;
+            this.enqueue(initData);
+            this.video.play().catch(() => {});
+            this.seekIv = setInterval(() => {
+              if (this.video.buffered.length > 0) {
+                const end = this.video.buffered.end(this.video.buffered.length - 1);
+                if (end - this.video.currentTime > 0.5) this.video.currentTime = end - 0.05;
+                const start = this.video.buffered.start(0);
+                if (end - start > 10 && !this.sb.updating) try { this.sb.remove(start, end - 5); } catch {}
+              }
+            }, 500);
+          } catch (e) { log(`${this.label}: init failed: ${e.message}`, "error"); }
+        });
+      }
+      enqueue(d) { this.queue.push(d); this.flush(); }
+      flush() {
+        if (!this.sb || this.sb.updating || !this.queue.length) return;
+        try { this.sb.appendBuffer(this.queue.shift()); } catch (e) { log(`${this.label}: ${e.message}`, "error"); }
+      }
+      destroy() {
+        if (this.seekIv) clearInterval(this.seekIv);
+        this.queue = []; this.ready = false;
+        if (this.ms && this.ms.readyState === 'open') try { this.ms.endOfStream(); } catch {}
+        this.video.src = '';
+      }
+    }
+
+    let colorPlayer = null, depthDecoder = null;
+    let rsConnection = null, rsRunning = false;
+
+    // ─── RealSense connection (via @moq/lite — supports WebSocket fallback) ─────────
+    async function connectRealSense() {
+      const depthPath = depthPathInput.value.trim();
+      if (!depthPath) return;
+      const relay = relayInput.value.trim();
+      const fullUrl = `${relay}/${depthPath}`;
+
+      colorPlayer = new MsePlayer(document.getElementById("colorVideo"), "Color");
+      depthDecoder = new DepthDecoder();
+
+      const connectOpts = buildConnectOpts();
+      log(`[depth] Connecting to ${fullUrl}...`);
+      rsConnection = await Moq.Connection.connect(new URL(fullUrl), connectOpts);
+      log('[depth] Connected', 'success');
+
+      const broadcast = rsConnection.consume(Moq.Path.from(""));
+      const videoTrack = broadcast.subscribe("video", 0);
+      const depthTrack = broadcast.subscribe("depth", 0);
+      log('[depth] Subscribed to video + depth tracks', 'success');
+
+      rsRunning = true;
+
+      // Read tracks in parallel
+      async function readTrack(track, handler, name) {
+        while (rsRunning) {
+          const group = await track.nextGroup();
+          if (!group) { log(`[depth] ${name} track ended`); break; }
+          while (rsRunning) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+            handler(new Uint8Array(frame));
+          }
+        }
+      }
+
+      readTrack(videoTrack, d => colorPlayer.onData(d), 'video').catch(e => {
+        if (rsRunning) log(`[depth] video error: ${e.message}`, 'error');
+      });
+      readTrack(depthTrack, d => depthDecoder.onData(d), 'depth').catch(e => {
+        if (rsRunning) log(`[depth] depth error: ${e.message}`, 'error');
+      });
+      log('[depth] Receiving frames...', 'success');
+    }
+
+    function disconnectRealSense() {
+      rsRunning = false;
+      if (rsConnection) { try { rsConnection.close(); } catch {} rsConnection = null; }
+      if (colorPlayer) { colorPlayer.destroy(); colorPlayer = null; }
+      if (depthDecoder) { depthDecoder.destroy(); depthDecoder = null; }
+      pcGeometry.setDrawRange(0, 0);
     }
 
     // ─── Motor Query Commands ────────────────────────────
@@ -582,6 +1049,167 @@
     const axesHelper = new THREE.AxesHelper(0.1);
     scene.add(axesHelper);
 
+    // ─── Point Cloud Geometry ─────────────────────────────
+    const PC_W = 640, PC_H = 480;
+    const maxPts = PC_W * PC_H;
+    const posArr = new Float32Array(maxPts * 3);
+    const colArr = new Float32Array(maxPts * 3);
+
+    const pcGeometry = new THREE.BufferGeometry();
+    pcGeometry.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    pcGeometry.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+    pcGeometry.setDrawRange(0, 0);
+
+    const pcMaterial = new THREE.PointsMaterial({ size: 0.002, vertexColors: true, sizeAttenuation: true });
+    const pcPoints = new THREE.Points(pcGeometry, pcMaterial);
+    pcPoints.scale.set(0.001, 0.001, 0.001); // mm → meters
+
+    // Camera indicator group — red dot + FOV frustum wireframe
+    const camGroup = new THREE.Group();
+    scene.add(camGroup);
+    camGroup.add(pcPoints);
+
+    // Red dot at camera origin
+    const camDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.012, 12, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff2222 })
+    );
+    camGroup.add(camDot);
+
+    // FOV frustum wireframe (updated by buildFrustum)
+    let camFrustum = null;
+    function buildFrustum() {
+      if (camFrustum) camGroup.remove(camFrustum);
+      const fx = 604.2, fy = 603.5;
+      const DEPTH_SHIFT_F = 0; // match server (10-bit, 1mm/step)
+      const nearM = 0.3;  // D435 min range ~0.3m
+      const farM  = (1023 << DEPTH_SHIFT_F) * 0.001; // max representable depth in meters (4092mm)
+      // Half-extents at near/far planes
+      const nw = nearM * (PC_W / 2) / fx, nh = nearM * (PC_H / 2) / fy;
+      const fw = farM  * (PC_W / 2) / fx, fh = farM  * (PC_H / 2) / fy;
+      // 8 corners: near TL TR BR BL, far TL TR BR BL (camera: +X right, -Y up, +Z forward)
+      const verts = new Float32Array([
+        -nw,  nh, nearM,   nw,  nh, nearM,   nw, -nh, nearM,  -nw, -nh, nearM,
+        -fw,  fh, farM,    fw,  fh, farM,    fw, -fh, farM,   -fw, -fh, farM,
+      ]);
+      // Lines: 4 edges near, 4 edges far, 4 connecting
+      const idx = [
+        0,1, 1,2, 2,3, 3,0,  // near rect
+        4,5, 5,6, 6,7, 7,4,  // far rect
+        0,4, 1,5, 2,6, 3,7,  // connecting
+      ];
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      geo.setIndex(idx);
+      camFrustum = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xff4444, opacity: 0.5, transparent: true }));
+      camGroup.add(camFrustum);
+    }
+    buildFrustum();
+
+    // Offscreen canvases for pixel extraction
+    const colorCanvas = document.createElement('canvas');
+    colorCanvas.width = PC_W; colorCanvas.height = PC_H;
+    const colorCtx = colorCanvas.getContext('2d', { willReadFrequently: true });
+
+    const colorPreviewCtx = document.getElementById('colorPreview').getContext('2d');
+    const depthPreviewCtx = document.getElementById('depthPreview').getContext('2d');
+    const pcStatsEl = document.getElementById('pcStats');
+    let pcFrames = 0, pcT0 = 0;
+
+    function updatePointCloud() {
+      const colorVideo = document.getElementById("colorVideo");
+      if (!colorVideo.videoWidth) return;
+      if (!depthDecoder || !depthDecoder.latestY) return;
+
+      const step = 1;
+      const fx = 604.2, fy = 603.5;  // RealSense D435 intrinsics
+      const cx = 322.7, cy = 252.7;
+      const DEPTH_SHIFT = 0; // server: gray10 = depth_mm >> 0 (10-bit, 1mm/step, max ~1m)
+
+      colorCtx.drawImage(colorVideo, 0, 0, PC_W, PC_H);
+      colorPreviewCtx.drawImage(colorVideo, 0, 0, 128, 96);
+
+      // Draw depth preview from decoded Y plane
+      const dY = depthDecoder.latestY;
+      const dW = depthDecoder.width, dH = depthDecoder.height;
+      const prevW = 128, prevH = 96;
+      const prevImg = depthPreviewCtx.createImageData(prevW, prevH);
+      const prevPx = prevImg.data;
+      const sx = dW / prevW, sy = dH / prevH;
+      for (let py = 0; py < prevH; py++) {
+        for (let px = 0; px < prevW; px++) {
+          const g = dY[Math.floor(py*sy) * dW + Math.floor(px*sx)];
+          const v8 = depthDecoder.is10bit ? (g >> 2) : g;
+          const pi = (py * prevW + px) * 4;
+          prevPx[pi] = v8; prevPx[pi+1] = v8; prevPx[pi+2] = v8; prevPx[pi+3] = 255;
+        }
+      }
+      depthPreviewCtx.putImageData(prevImg, 0, 0);
+
+      const cPx = colorCtx.getImageData(0, 0, PC_W, PC_H).data;
+
+      let n = 0;
+      for (let v = 0; v < PC_H; v += step) {
+        for (let u = 0; u < PC_W; u += step) {
+          const dIdx = v * PC_W + u;
+          const gray = dY[dIdx]; // 10-bit (0-1023) or 8-bit (0-255)
+          if (gray < 2) continue;
+
+          const depth = depthDecoder.is10bit ? (gray << DEPTH_SHIFT) : (gray << 4);
+          const i3 = n * 3;
+          posArr[i3]     = -(u - cx) * depth / fx;
+          posArr[i3 + 1] = -(v - cy) * depth / fy;
+          posArr[i3 + 2] = depth;
+
+          const cIdx = (v * PC_W + u) * 4;
+          colArr[i3]     = cPx[cIdx] / 255;
+          colArr[i3 + 1] = cPx[cIdx + 1] / 255;
+          colArr[i3 + 2] = cPx[cIdx + 2] / 255;
+          n++;
+        }
+      }
+
+      pcGeometry.attributes.position.needsUpdate = true;
+      pcGeometry.attributes.color.needsUpdate = true;
+      pcGeometry.setDrawRange(0, n);
+      pcGeometry.computeBoundingSphere();
+
+      pcFrames++;
+      if (!pcT0) pcT0 = performance.now();
+      const elapsed = (performance.now() - pcT0) / 1000;
+      const fps = elapsed > 0 ? (pcFrames / elapsed).toFixed(1) : '0';
+      pcStatsEl.textContent = `${n.toLocaleString()} pts | ${fps} fps | step=${step}`;
+    }
+
+    // Point size slider
+    document.getElementById('ptSize').addEventListener('input', (e) => {
+      pcMaterial.size = parseFloat(e.target.value) * 0.001; // slider value in mm, material in meters
+    });
+    pcMaterial.size = parseFloat(document.getElementById('ptSize').value) * 0.001; // apply restored value
+
+    // Camera XYZRPY — apply transform via explicit matrix product R = Rz(yaw) * Ry(pitch) * Rx(roll)
+    const _rx = new THREE.Matrix4(), _ry = new THREE.Matrix4(), _rz = new THREE.Matrix4(), _tmp = new THREE.Matrix4();
+    function updateCamPose() {
+      const x = parseFloat(document.getElementById('camX').value) || 0;
+      const y = parseFloat(document.getElementById('camY').value) || 0;
+      const z = parseFloat(document.getElementById('camZ').value) || 0;
+      const roll  = (parseFloat(document.getElementById('camRoll').value)  || 0) * Math.PI / 180;
+      const pitch = (parseFloat(document.getElementById('camPitch').value) || 0) * Math.PI / 180;
+      const yaw   = (parseFloat(document.getElementById('camYaw').value)   || 0) * Math.PI / 180;
+      camGroup.position.set(x, y, z);
+      // R = Rz(yaw) * Ry(pitch) * Rx(roll)
+      _rx.makeRotationX(roll);
+      _ry.makeRotationY(pitch);
+      _rz.makeRotationZ(yaw);
+      _tmp.multiplyMatrices(_rz, _ry);
+      _tmp.multiply(_rx);
+      camGroup.setRotationFromMatrix(_tmp);
+    }
+    for (const id of ['camX', 'camY', 'camZ', 'camRoll', 'camPitch', 'camYaw']) {
+      document.getElementById(id).addEventListener('input', updateCamPose);
+    }
+    updateCamPose(); // apply restored values from localStorage
+
     // ─── Load URDF model ────────────────────────────────
     let robot = null;
 
@@ -614,6 +1242,16 @@
       setStatus("Model load failed");
     });
 
+    // ─── Gripper conversion ───────────────────────────────
+    // Damiao motor radians → URDF prismatic meters (from openarm_ros2 v10_simple_hardware)
+    // Closed: motor=0 rad → joint=0 m, Open: motor=-1.0472 rad → joint=0.044 m
+    const GRIPPER_MOTOR_OPEN_RAD = -1.0472; // -60° = -pi/3
+    const GRIPPER_JOINT_OPEN_M = 0.044;     // 44mm finger travel
+    function gripperMotorToJoint(motorRad) {
+      return Math.max(0, Math.min(GRIPPER_JOINT_OPEN_M,
+        GRIPPER_JOINT_OPEN_M * (motorRad / GRIPPER_MOTOR_OPEN_RAD)));
+    }
+
     // ─── Apply joint angles (both arms) ──────────────────
     function updateArmPose() {
       if (!robot) return;
@@ -621,20 +1259,26 @@
         if (robot.joints[L_JOINT_NAMES[i]]) robot.joints[L_JOINT_NAMES[i]].setJointValue(leftJointState[i].angle);
         if (robot.joints[R_JOINT_NAMES[i]]) robot.joints[R_JOINT_NAMES[i]].setJointValue(rightJointState[i].angle);
       }
+      // Gripper (joint index 7 = "Grip") — only set primary EE, mimic handles EE2
+      const lGrip = gripperMotorToJoint(leftJointState[7].angle);
+      const rGrip = gripperMotorToJoint(rightJointState[7].angle);
+      if (robot.joints["L_EE"]) robot.joints["L_EE"].setJointValue(lGrip);
+      if (robot.joints["R_EE"]) robot.joints["R_EE"].setJointValue(rGrip);
     }
 
     // ─── Update UI ────────────────────────────────────────
     function updatePanel() {
-      const jointState = leftPathInput.value.trim() ? leftJointState : rightJointState;
-      for (let i = 0; i < JOINTS.length; i++) {
-        const s = jointState[i];
-        const deg = (s.angle * 180 / Math.PI).toFixed(1);
-        jointEls[i].angle.innerHTML = `${deg}&deg;`;
-        jointEls[i].vel.textContent = s.velocity.toFixed(1);
-        jointEls[i].tau.textContent = s.torque.toFixed(1);
-        tempEls[i].mos.textContent = s.tempMos;
-        tempEls[i].rot.textContent = s.tempRotor;
+      function updateArmEls(els, state) {
+        for (let i = 0; i < JOINTS.length; i++) {
+          const s = state[i];
+          const deg = (s.angle * 180 / Math.PI).toFixed(1);
+          els[i].angle.innerHTML = `${deg}&deg;`;
+          els[i].vel.textContent = s.velocity.toFixed(1);
+          els[i].tau.textContent = s.torque.toFixed(1);
+        }
       }
+      updateArmEls(leftJointEls, leftJointState);
+      updateArmEls(rightJointEls, rightJointState);
 
       document.getElementById("frameCount").textContent = frameCount;
       document.getElementById("bytesReceived").textContent = formatBytes(bytesTotal);
@@ -666,12 +1310,73 @@
     // Initial size set after first frame
     requestAnimationFrame(onResize);
 
+    // ─── View toggle (3D / Camera) ────────────────────────
+    let viewMode = '3d'; // '3d' or 'camera'
+    const view3dEl = document.getElementById('view3d');
+    const viewCamEl = document.getElementById('viewCamera');
+    const viewToggleBtn = document.getElementById('viewToggle');
+    const colorFullCanvas = document.getElementById('colorFullCanvas');
+    const depthFullCanvas = document.getElementById('depthFullCanvas');
+    const colorFullCtx = colorFullCanvas.getContext('2d');
+    const depthFullCtx = depthFullCanvas.getContext('2d');
+
+    viewToggleBtn.addEventListener('click', () => {
+      if (viewMode === '3d') {
+        viewMode = 'camera';
+        view3dEl.style.display = 'none';
+        viewCamEl.style.display = 'block';
+        viewToggleBtn.textContent = '3D';
+        viewToggleBtn.style.background = '#00d4ff';
+        viewToggleBtn.style.color = '#000';
+      } else {
+        viewMode = '3d';
+        view3dEl.style.display = '';
+        viewCamEl.style.display = 'none';
+        viewToggleBtn.textContent = 'Camera';
+        viewToggleBtn.style.background = '#2a2a4a';
+        viewToggleBtn.style.color = '#aaa';
+        onResize();
+      }
+    });
+
+    function updateCameraView() {
+      if (viewMode !== 'camera') return;
+      const colorVideo = document.getElementById('colorVideo');
+      if (colorVideo.videoWidth) {
+        if (colorFullCanvas.width !== colorVideo.videoWidth) {
+          colorFullCanvas.width = colorVideo.videoWidth;
+          colorFullCanvas.height = colorVideo.videoHeight;
+        }
+        colorFullCtx.drawImage(colorVideo, 0, 0);
+      }
+      if (depthDecoder && depthDecoder.latestY) {
+        const dY = depthDecoder.latestY;
+        const dW = depthDecoder.width, dH = depthDecoder.height;
+        if (depthFullCanvas.width !== dW) {
+          depthFullCanvas.width = dW;
+          depthFullCanvas.height = dH;
+        }
+        const img = depthFullCtx.createImageData(dW, dH);
+        const px = img.data;
+        for (let i = 0; i < dW * dH; i++) {
+          const v8 = depthDecoder.is10bit ? (dY[i] >> 2) : dY[i];
+          px[i*4] = v8; px[i*4+1] = v8; px[i*4+2] = v8; px[i*4+3] = 255;
+        }
+        depthFullCtx.putImageData(img, 0, 0);
+      }
+    }
+
     // ─── Render loop ──────────────────────────────────────
     function animate() {
       requestAnimationFrame(animate);
+      updateArmPose();
+      if (viewMode === 'camera') {
+        updateCameraView();
+        return;
+      }
       if (!renderer) return;
       controls.update();
-      updateArmPose();
+      updatePointCloud();
       renderer.render(scene, camera);
     }
     animate();
@@ -716,6 +1421,18 @@
           jointState[jointIdx].tempMos = state.tempMos;
           jointState[jointIdx].tempRotor = state.tempRotor;
           jointState[jointIdx].updated = true;
+          // Debug gripper cross-talk: log when gripper (index 7) changes significantly
+          if (jointIdx === 7) {
+            const deg = (state.qRad * 180 / Math.PI).toFixed(1);
+            const key = `_lastGripDeg_${label}`;
+            if (!window[key] || Math.abs(parseFloat(deg) - window[key]) > 0.5) {
+              window[key] = parseFloat(deg);
+              const otherArm = label === "left" ? "right" : "left";
+              const otherState = label === "left" ? rightJointState : leftJointState;
+              const otherDeg = (otherState[7].angle * 180 / Math.PI).toFixed(1);
+              log(`[GRIP] ${label}=${deg}° (${otherArm}=${otherDeg}°) canId=0x${parsed.canId.toString(16)}`, "data");
+            }
+          }
         }
       }
     }
@@ -725,7 +1442,8 @@
       try {
         const leftPath = leftPathInput.value.trim();
         const rightPath = rightPathInput.value.trim();
-        if (!leftPath && !rightPath) { log("No paths configured", "error"); return; }
+        const depthPath = depthPathInput.value.trim();
+        if (!leftPath && !rightPath && !depthPath) { log("No paths configured", "error"); return; }
 
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -748,10 +1466,18 @@
           } catch (e) {}
         }
 
+        // Warn if both arms subscribe to the same path (likely localStorage stale value)
+        if (leftPath && rightPath && leftPath === rightPath) {
+          log(`WARNING: Left and Right arms use the same path "${leftPath}" — gripper cross-talk expected!`, "error");
+        }
+
         // Subscribe to both arms concurrently
         const subs = [];
         if (leftPath) subs.push(subscribeArm("left", leftPath, leftJointState));
         if (rightPath) subs.push(subscribeArm("right", rightPath, rightJointState));
+
+        // Connect RealSense point cloud if configured
+        try { await connectRealSense(); } catch (e) { log(`[depth] ${e.message}`, "error"); }
 
         queryBtn.disabled = false;
         setStatus("Streaming");
@@ -769,6 +1495,7 @@
           queryBtn.classList.remove("active");
           queryBtn.textContent = "Query Motors";
         }
+        disconnectRealSense();
         queryBtn.disabled = true;
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -785,6 +1512,7 @@
       }
       queryBtn.disabled = true;
       setStatus("Stopping...");
+      disconnectRealSense();
       for (const conn of connections) { try { conn.close(); } catch (e) {} }
       connections = [];
       startBtn.disabled = false;
@@ -823,7 +1551,7 @@
     log("Ready. Click Connect to start.", "info");
 
     // Auto-connect if query params provided
-    if (params.has("left") || params.has("right") || params.has("path")) {
+    if (params.has("left") || params.has("right") || params.has("path") || params.has("depth")) {
       log("Auto-connecting from query params...", "info");
       startBtn.click();
     }

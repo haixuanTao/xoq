@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Camera CMAF Player - xoq</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 1rem;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    h1 { color: #00d4ff; margin-bottom: 0.5rem; }
+    .subtitle { color: #888; margin-bottom: 1.5rem; }
+
+    .controls {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .controls input[type="text"] {
+      padding: 0.5rem;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #2a2a4a;
+      color: #fff;
+      width: 300px;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.2s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #startBtn { background: #00d4ff; color: #000; }
+    #startBtn:hover:not(:disabled) { background: #00b8e6; }
+    #stopBtn { background: #ff4757; color: #fff; }
+    #stopBtn:hover:not(:disabled) { background: #ff3344; }
+
+    .video-container {
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 1rem;
+      aspect-ratio: 16/9;
+    }
+    video { width: 100%; height: 100%; display: block; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .stat {
+      background: #2a2a4a;
+      padding: 0.75rem;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .stat-label { color: #888; font-size: 0.75rem; text-transform: uppercase; }
+    .stat-value { font-size: 1.2rem; font-weight: bold; color: #00d4ff; }
+
+    #log {
+      background: #0a0a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 1rem;
+      height: 200px;
+      overflow-y: auto;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.8rem;
+    }
+    .log-entry { margin: 0.2rem 0; }
+    .log-info { color: #888; }
+    .log-success { color: #2ed573; }
+    .log-error { color: #ff4757; }
+    .log-data { color: #00d4ff; }
+  </style>
+</head>
+<body>
+  <h1>Camera CMAF Player</h1>
+  <p class="subtitle">xoq MoQ Video Stream Client</p>
+
+  <div class="controls">
+    <label>
+      Relay:
+      <input type="text" id="relayUrl" />
+    </label>
+    <label>
+      Path:
+      <input type="text" id="path" />
+    </label>
+  </div>
+  <div class="controls">
+    <button id="startBtn">Connect</button>
+    <button id="stopBtn" disabled>Disconnect</button>
+  </div>
+
+  <div class="video-container">
+    <video id="video" autoplay muted playsinline></video>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">Status</div>
+      <div class="stat-value" id="status">Idle</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Groups</div>
+      <div class="stat-value" id="groupCount">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Received</div>
+      <div class="stat-value" id="bytesReceived">0 B</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Buffer</div>
+      <div class="stat-value" id="bufferLength">0s</div>
+    </div>
+  </div>
+
+  <h3>Log</h3>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as Moq from "@moq/lite";
+
+    // Parse query params (for Playwright automation)
+    const params = new URLSearchParams(location.search);
+    const relayDefault = "https://cdn.1ms.ai";
+    const pathDefault = "anon/camera-0";
+
+    const relayInput = document.getElementById("relayUrl");
+    const pathInput = document.getElementById("path");
+    relayInput.value = params.get("relay") || relayDefault;
+    pathInput.value = params.get("path") || pathDefault;
+
+    const video = document.getElementById("video");
+    const logEl = document.getElementById("log");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const statusEl = document.getElementById("status");
+    const groupCountEl = document.getElementById("groupCount");
+    const bytesReceivedEl = document.getElementById("bytesReceived");
+    const bufferLengthEl = document.getElementById("bufferLength");
+
+    let connection = null;
+    let running = false;
+    let mediaSource = null;
+    let sourceBuffer = null;
+    let groupCount = 0;
+    let bytesReceived = 0;
+    let pendingSegments = [];
+
+    function log(msg, type = "info") {
+      const entry = document.createElement("div");
+      entry.className = `log-entry log-${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+
+    function updateStats() {
+      groupCountEl.textContent = groupCount;
+      bytesReceivedEl.textContent = formatBytes(bytesReceived);
+      if (video.buffered.length > 0) {
+        const buffered = video.buffered.end(0) - video.currentTime;
+        bufferLengthEl.textContent = `${Math.max(0, buffered).toFixed(1)}s`;
+      }
+    }
+
+    function setStatus(s) { statusEl.textContent = s; }
+
+    function processPending() {
+      if (pendingSegments.length > 0 && sourceBuffer && !sourceBuffer.updating) {
+        const seg = pendingSegments.shift();
+        try { sourceBuffer.appendBuffer(seg); } catch (e) { log(`Append error: ${e.message}`, "error"); }
+      }
+    }
+
+    async function appendBuffer(data) {
+      if (!sourceBuffer || sourceBuffer.updating) {
+        pendingSegments.push(data);
+        return;
+      }
+      try { sourceBuffer.appendBuffer(data); } catch (e) { log(`Append error: ${e.message}`, "error"); }
+    }
+
+    // Detect codec from fMP4 init segment (avcC for H.264, av1C for AV1)
+    function detectCodec(data) {
+      const d = new Uint8Array(data), h = n => n.toString(16).padStart(2,'0').toUpperCase();
+      for (let i = 0; i < d.length - 11; i++) {
+        // H.264: avcC box (0x61766343)
+        if (d[i+4]===0x61 && d[i+5]===0x76 && d[i+6]===0x63 && d[i+7]===0x43) {
+          const o = i+8; if (o+4 <= d.length) return `avc1.${h(d[o+1])}${h(d[o+2])}${h(d[o+3])}`;
+        }
+        // AV1: av1C box (0x61763143)
+        if (d[i+4]===0x61 && d[i+5]===0x76 && d[i+6]===0x31 && d[i+7]===0x43) {
+          const o = i+8; if (o+4 <= d.length) {
+            const profile = (d[o+1] >> 5) & 0x7;
+            const level = d[o+1] & 0x1F;
+            const tier = (d[o+2] >> 7) & 1;
+            const highBitDepth = (d[o+2] >> 6) & 1;
+            const twelveBit = (d[o+2] >> 5) & 1;
+            const bitDepth = highBitDepth ? (twelveBit ? 12 : 10) : 8;
+            const levelStr = String(level).padStart(2,'0');
+            const tierChar = tier ? 'H' : 'M';
+            return `av01.${profile}.${levelStr}${tierChar}.${String(bitDepth).padStart(2,'0')}`;
+          }
+        }
+      }
+      return null;
+    }
+
+    let initSegmentData = null; // Buffer first segment to detect codec
+
+    async function initMSE(firstSegment) {
+      const codec = detectCodec(firstSegment);
+      if (!codec) {
+        log("Could not detect codec from init segment", "error");
+        throw new Error("No codec detected");
+      }
+      const mime = `video/mp4; codecs="${codec}"`;
+      if (!MediaSource.isTypeSupported(mime)) {
+        log(`Codec not supported: ${mime}`, "error");
+        throw new Error(`Codec not supported: ${mime}`);
+      }
+      log(`Detected codec: ${codec}`, "success");
+
+      return new Promise((resolve, reject) => {
+        mediaSource = new MediaSource();
+        video.src = URL.createObjectURL(mediaSource);
+
+        mediaSource.addEventListener("sourceopen", () => {
+          log("MediaSource opened", "success");
+          log(`Using codec: ${mime}`, "success");
+          sourceBuffer = mediaSource.addSourceBuffer(mime);
+          sourceBuffer.mode = "segments";
+          sourceBuffer.addEventListener("updateend", () => {
+            processPending();
+            updateStats();
+            if (video.paused && video.buffered.length > 0) {
+              video.play().catch(() => {});
+            }
+          });
+          sourceBuffer.addEventListener("error", (e) => {
+            log(`SourceBuffer error: ${e.type}`, "error");
+            console.error("SourceBuffer error:", e);
+          });
+          resolve();
+        });
+
+        mediaSource.addEventListener("error", reject);
+      });
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        const relay = relayInput.value;
+        const path = pathInput.value;
+        const fullUrl = `${relay}/${path}`;
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        running = true;
+        groupCount = 0;
+        bytesReceived = 0;
+        pendingSegments = [];
+
+        setStatus("Connecting...");
+        log(`Connecting to ${fullUrl}...`);
+
+        // Connect with full path in URL; consume with empty sub-path
+        connection = await Moq.Connection.connect(new URL(fullUrl));
+        log("Connected!", "success");
+
+        setStatus("Subscribing...");
+        const broadcast = connection.consume(Moq.Path.from(""));
+        const track = broadcast.subscribe("video", 0);
+        log("Subscribed to video track", "success");
+
+        setStatus("Streaming");
+        let mseInitialized = false;
+
+        while (running) {
+          const group = await track.nextGroup();
+          if (!group) { log("Track ended"); break; }
+
+          while (running) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+
+            groupCount++;
+            bytesReceived += frame.byteLength;
+
+            const view = new Uint8Array(frame);
+            const header = Array.from(view.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+            if (groupCount === 1) {
+              log(`First segment: ${frame.byteLength} bytes [${header}...]`, "data");
+              if (view[4] === 0x66 && view[5] === 0x74 && view[6] === 0x79 && view[7] === 0x70) {
+                log("Valid ftyp box detected (init segment)", "success");
+              } else if (view[4] === 0x6d && view[5] === 0x6f && view[6] === 0x6f && view[7] === 0x66) {
+                log("moof box (media segment without init?)", "error");
+              }
+            } else if (groupCount <= 5) {
+              const boxType = String.fromCharCode(view[4], view[5], view[6], view[7]);
+              log(`Segment ${groupCount}: ${frame.byteLength} bytes, box=${boxType}`, "data");
+            }
+
+            // Initialize MSE on first segment (auto-detect codec from init data)
+            if (!mseInitialized) {
+              await initMSE(frame);
+              mseInitialized = true;
+            }
+
+            await appendBuffer(frame);
+            updateStats();
+          }
+        }
+
+        setStatus("Ended");
+      } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        console.error(e);
+        setStatus("Error");
+      } finally {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      running = false;
+      setStatus("Stopping...");
+      try { await connection?.close(); } catch (e) {}
+      connection = null;
+      if (mediaSource?.readyState === "open") {
+        try { mediaSource.endOfStream(); } catch (e) {}
+      }
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      setStatus("Disconnected");
+      log("Disconnected", "success");
+    });
+
+    video.addEventListener("error", (e) => {
+      const err = video.error;
+      log(`Video error: ${err?.message || 'unknown'} (code: ${err?.code})`, "error");
+    });
+
+    video.addEventListener("loadedmetadata", () => {
+      log(`Video metadata loaded: ${video.videoWidth}x${video.videoHeight}`, "success");
+    });
+
+    video.addEventListener("canplay", () => {
+      log("Video can play!", "success");
+    });
+
+    setInterval(updateStats, 1000);
+    log("Ready. Enter relay URL and path, then click Connect.", "info");
+
+    // Auto-connect if query params provided
+    if (params.has("relay") || params.has("path")) {
+      log("Auto-connecting from query params...", "info");
+      startBtn.click();
+    }
+  </script>
+</body>
+</html>

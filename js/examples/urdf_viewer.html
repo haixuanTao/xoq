@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>URDF Robot Viewer - xoq</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Top bar */
+    .top-bar {
+      padding: 0.5rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      border-bottom: 1px solid #333;
+      background: #16162a;
+    }
+    .top-bar h1 { color: #00d4ff; font-size: 1.1rem; white-space: nowrap; }
+    .top-bar label {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.85rem;
+      color: #aaa;
+    }
+    .top-bar input[type="text"] {
+      padding: 0.35rem 0.5rem;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #2a2a4a;
+      color: #fff;
+      font-size: 0.85rem;
+      width: 240px;
+    }
+    button {
+      padding: 0.35rem 0.75rem;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.2s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #loadUrdfBtn { background: #a855f7; color: #fff; }
+    #loadUrdfBtn:hover:not(:disabled) { background: #9333ea; }
+    #startBtn { background: #00d4ff; color: #000; }
+    #startBtn:hover:not(:disabled) { background: #00b8e6; }
+    #stopBtn { background: #ff4757; color: #fff; }
+    #stopBtn:hover:not(:disabled) { background: #ff3344; }
+    #queryBtn { background: #2a2a4a; color: #888; border: 1px solid #444; }
+    #queryBtn.active { background: #2ed573; color: #000; border-color: #2ed573; }
+    #queryBtn:hover:not(:disabled) { background: #444; }
+    #queryBtn.active:hover:not(:disabled) { background: #26b860; }
+
+    /* Main layout */
+    .main {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+
+    /* 3D canvas */
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+    }
+    #threeCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .canvas-overlay {
+      position: absolute;
+      top: 0.5rem;
+      left: 0.5rem;
+      font-size: 0.7rem;
+      color: #888;
+      pointer-events: none;
+    }
+
+    /* Right panel */
+    .side-panel {
+      width: 300px;
+      background: #16162a;
+      border-left: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .panel-section {
+      padding: 0.75rem;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .panel-section h3 {
+      font-size: 0.8rem;
+      color: #888;
+      text-transform: uppercase;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Joint rows */
+    .joint-row {
+      display: grid;
+      grid-template-columns: 70px 1fr 50px;
+      gap: 0.25rem;
+      align-items: center;
+      padding: 0.3rem 0;
+      font-size: 0.8rem;
+      border-bottom: 1px solid #1e1e3a;
+    }
+    .joint-row:last-child { border-bottom: none; }
+    .joint-label {
+      font-weight: bold;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .joint-angle {
+      font-family: 'Monaco', 'Menlo', monospace;
+      text-align: right;
+      font-size: 0.85rem;
+    }
+    .joint-raw {
+      font-family: 'Monaco', 'Menlo', monospace;
+      text-align: right;
+      font-size: 0.7rem;
+      color: #888;
+    }
+
+    /* Mapping rows */
+    .mapping-row {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.25rem 0;
+      font-size: 0.8rem;
+    }
+    .mapping-row input {
+      width: 40px;
+      padding: 0.2rem 0.3rem;
+      border: 1px solid #444;
+      border-radius: 3px;
+      background: #2a2a4a;
+      color: #fff;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+    .mapping-row select {
+      flex: 1;
+      padding: 0.2rem 0.3rem;
+      border: 1px solid #444;
+      border-radius: 3px;
+      background: #2a2a4a;
+      color: #fff;
+      font-size: 0.8rem;
+    }
+    .mapping-row .remove-btn {
+      padding: 0.1rem 0.4rem;
+      background: #ff475733;
+      color: #ff4757;
+      border: 1px solid #ff475744;
+      font-size: 0.7rem;
+    }
+    .mapping-actions {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.4rem;
+    }
+    .mapping-actions button {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.5rem;
+      background: #2a2a4a;
+      color: #aaa;
+      border: 1px solid #444;
+    }
+
+    /* Stats */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.4rem;
+    }
+    .stat {
+      background: #2a2a4a;
+      padding: 0.4rem;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .stat-label { color: #888; font-size: 0.65rem; text-transform: uppercase; }
+    .stat-value { font-size: 0.9rem; font-weight: bold; color: #00d4ff; }
+
+    /* Log */
+    .log-panel {
+      height: 120px;
+      border-top: 1px solid #333;
+      background: #0a0a1a;
+      overflow-y: auto;
+      padding: 0.5rem;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.7rem;
+      flex-shrink: 0;
+    }
+    .log-entry { margin: 0.15rem 0; }
+    .log-info { color: #888; }
+    .log-success { color: #2ed573; }
+    .log-error { color: #ff4757; }
+    .log-data { color: #00d4ff; }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <h1>URDF Viewer</h1>
+    <label>
+      URDF:
+      <input type="text" id="urdfUrl" style="width:300px;" />
+    </label>
+    <button id="loadUrdfBtn">Load</button>
+    <span style="color:#444;">|</span>
+    <label>
+      Relay:
+      <input type="text" id="relayUrl" />
+    </label>
+    <label>
+      Path:
+      <input type="text" id="path" />
+    </label>
+    <label>
+      Cert hash:
+      <input type="text" id="certHash" placeholder="sha256 hex (optional)" style="width:180px;" />
+    </label>
+    <button id="startBtn">Connect</button>
+    <button id="stopBtn" disabled>Disconnect</button>
+    <button id="queryBtn" disabled>Query Servos</button>
+    <span id="statusText" style="color:#888; font-size:0.8rem;">Idle</span>
+  </div>
+
+  <div class="main">
+    <div class="canvas-container">
+      <canvas id="threeCanvas"></canvas>
+      <div class="canvas-overlay">
+        <span>Drag to orbit / Scroll to zoom / Right-drag to pan</span>
+      </div>
+    </div>
+
+    <div class="side-panel">
+      <div class="panel-section">
+        <h3>Joint Angles</h3>
+        <div class="joint-row" style="font-size:0.65rem; color:#666;">
+          <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Raw</span>
+        </div>
+        <div id="jointRows"><span style="color:#666; font-size:0.75rem;">Load a URDF to see joints</span></div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Joint Mapping (Servo ID &rarr; Joint)</h3>
+        <div id="mappingRows"></div>
+        <div class="mapping-actions">
+          <button id="addMappingBtn">+ Add</button>
+          <button id="resetMappingBtn">Reset</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Stats</h3>
+        <div class="stats-grid">
+          <div class="stat">
+            <div class="stat-label">Frames</div>
+            <div class="stat-value" id="frameCount">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Bytes</div>
+            <div class="stat-value" id="bytesReceived">0 B</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">FPS</div>
+            <div class="stat-value" id="canFps">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Last</div>
+            <div class="stat-value" id="lastUpdate">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="log-panel" id="log"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+    import URDFLoader from "urdf-loader";
+    import * as Moq from "@moq/lite";
+
+    // ─── Config ──────────────────────────────────────────
+    const params = new URLSearchParams(location.search);
+    const relayDefault = "https://cdn.1ms.ai";
+    const pathDefault = "anon/xoq-serial";
+    const urdfDefault = "urdf/so101/so101.urdf";
+
+    const urdfInput = document.getElementById("urdfUrl");
+    const relayInput = document.getElementById("relayUrl");
+    const pathInput = document.getElementById("path");
+    const certHashInput = document.getElementById("certHash");
+    urdfInput.value = params.get("urdf") || urdfDefault;
+    relayInput.value = params.get("relay") || relayDefault;
+    pathInput.value = params.get("path") || pathDefault;
+    certHashInput.value = params.get("certHash") || localStorage.getItem("moq-cert-hash") || "";
+    certHashInput.addEventListener("input", () => localStorage.setItem("moq-cert-hash", certHashInput.value));
+
+    const logEl = document.getElementById("log");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const queryBtn = document.getElementById("queryBtn");
+    const loadUrdfBtn = document.getElementById("loadUrdfBtn");
+    const statusText = document.getElementById("statusText");
+
+    // ─── State ────────────────────────────────────────────
+    let robot = null; // loaded URDF robot object
+    let jointNames = []; // URDF joint names (revolute only)
+    const servoState = {}; // servoId -> { position, updated }
+
+    let subConnection = null;
+    let pubConnection = null;
+    let pubBroadcast = null;
+    let pubTrack = null;
+    let running = false;
+    let frameCount = 0;
+    let bytesTotal = 0;
+    let fpsCounter = 0;
+    let lastFpsTime = performance.now();
+    let queryInterval = null;
+    let queryActive = false;
+
+    // ─── Logging ──────────────────────────────────────────
+    function log(msg, type = "info") {
+      const entry = document.createElement("div");
+      entry.className = `log-entry log-${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(entry);
+      if (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function formatBytes(b) {
+      if (b < 1024) return `${b} B`;
+      if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} K`;
+      return `${(b / (1024 * 1024)).toFixed(1)} M`;
+    }
+
+    function setStatus(s) { statusText.textContent = s; }
+
+    // ─── FeeTech STS3215 Protocol ─────────────────────────
+    const STS_INST_READ = 0x02;
+    const STS_PRESENT_POSITION = 56; // 2 bytes, little-endian
+
+    function stsChecksum(body) {
+      let sum = 0;
+      for (let i = 0; i < body.length; i++) sum += body[i];
+      return (~sum) & 0xFF;
+    }
+
+    function stsReadPacket(servoId, address, count) {
+      const body = new Uint8Array([servoId, 4, STS_INST_READ, address, count]);
+      const checksum = stsChecksum(body);
+      const packet = new Uint8Array(2 + body.length + 1);
+      packet[0] = 0xFF;
+      packet[1] = 0xFF;
+      packet.set(body, 2);
+      packet[packet.length - 1] = checksum;
+      return packet;
+    }
+
+    function parseStsResponse(data) {
+      // Find 0xFF 0xFF header
+      for (let i = 0; i < data.length - 5; i++) {
+        if (data[i] === 0xFF && data[i + 1] === 0xFF) {
+          const servoId = data[i + 2];
+          const length = data[i + 3];
+          if (i + 3 + length > data.length) return null;
+          const error = data[i + 4];
+          const params = data.slice(i + 5, i + 3 + length);
+          return { servoId, error, params };
+        }
+      }
+      return null;
+    }
+
+    // Convert STS3215 raw position (0-4095) to radians
+    // 0-4095 maps to 0-360 degrees. Center (2048) = 0 rad.
+    function positionToRadians(raw) {
+      return (raw - 2048) * (Math.PI / 2048);
+    }
+
+    // ─── Joint Mapping ──────────────────────────────────
+    // Default: servo ID 1-6 maps to URDF joints "1"-"6"
+    const STORAGE_KEY = "urdf-viewer-joint-mapping";
+
+    function loadMapping() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) return JSON.parse(stored);
+      } catch {}
+      return getDefaultMapping();
+    }
+
+    function getDefaultMapping() {
+      return { "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6" };
+    }
+
+    function saveMapping(mapping) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(mapping));
+    }
+
+    let jointMapping = loadMapping();
+
+    const mappingRowsEl = document.getElementById("mappingRows");
+    const addMappingBtn = document.getElementById("addMappingBtn");
+    const resetMappingBtn = document.getElementById("resetMappingBtn");
+
+    function rebuildMappingUI() {
+      mappingRowsEl.innerHTML = "";
+      for (const [servoId, jointName] of Object.entries(jointMapping)) {
+        const row = document.createElement("div");
+        row.className = "mapping-row";
+
+        const idInput = document.createElement("input");
+        idInput.type = "text";
+        idInput.value = servoId;
+        idInput.title = "Servo ID";
+
+        const arrow = document.createElement("span");
+        arrow.textContent = "\u2192";
+        arrow.style.color = "#666";
+
+        const jointSelect = document.createElement("select");
+        // Add available URDF joints
+        const noneOpt = document.createElement("option");
+        noneOpt.value = "";
+        noneOpt.textContent = "(none)";
+        jointSelect.appendChild(noneOpt);
+        for (const jn of jointNames) {
+          const opt = document.createElement("option");
+          opt.value = jn;
+          opt.textContent = jn;
+          if (jn === jointName) opt.selected = true;
+          jointSelect.appendChild(opt);
+        }
+        if (jointNames.length === 0) {
+          // URDF not loaded yet — show text input fallback
+          const opt = document.createElement("option");
+          opt.value = jointName;
+          opt.textContent = jointName;
+          opt.selected = true;
+          jointSelect.appendChild(opt);
+        }
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "remove-btn";
+        removeBtn.textContent = "\u00d7";
+        removeBtn.addEventListener("click", () => {
+          delete jointMapping[servoId];
+          saveMapping(jointMapping);
+          rebuildMappingUI();
+        });
+
+        // Update mapping on change
+        const updateFn = () => {
+          const oldId = servoId;
+          const newId = idInput.value.trim();
+          const newJoint = jointSelect.value;
+          if (oldId !== newId) delete jointMapping[oldId];
+          if (newId) jointMapping[newId] = newJoint;
+          saveMapping(jointMapping);
+        };
+        idInput.addEventListener("change", updateFn);
+        jointSelect.addEventListener("change", updateFn);
+
+        row.appendChild(idInput);
+        row.appendChild(arrow);
+        row.appendChild(jointSelect);
+        row.appendChild(removeBtn);
+        mappingRowsEl.appendChild(row);
+      }
+    }
+
+    addMappingBtn.addEventListener("click", () => {
+      // Find next unused ID
+      let nextId = 1;
+      while (jointMapping[String(nextId)]) nextId++;
+      jointMapping[String(nextId)] = jointNames[0] || "";
+      saveMapping(jointMapping);
+      rebuildMappingUI();
+    });
+
+    resetMappingBtn.addEventListener("click", () => {
+      jointMapping = getDefaultMapping();
+      saveMapping(jointMapping);
+      rebuildMappingUI();
+    });
+
+    rebuildMappingUI();
+
+    // ─── Connect options helper ─────────────────────────
+    function buildConnectOpts() {
+      const certHash = certHashInput.value.trim();
+      const opts = {};
+      if (certHash) {
+        const hex = certHash.replace(/[^0-9a-fA-F]/g, '');
+        const hashBytes = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < hashBytes.length; i++) hashBytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+        opts.webtransport = {
+          serverCertificateHashes: [{ algorithm: "sha-256", value: hashBytes.buffer }],
+        };
+        log(`Using cert hash: ${hex.slice(0, 16)}...`, "data");
+      }
+      return opts;
+    }
+
+    // ─── Three.js Scene ───────────────────────────────────
+    const canvas = document.getElementById("threeCanvas");
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setClearColor(0x1a1a2e);
+    } catch (e) {
+      log(`WebGL not available: ${e.message}`, "error");
+      renderer = null;
+    }
+
+    const scene = new THREE.Scene();
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+    const dirLight2 = new THREE.DirectionalLight(0x4488ff, 0.3);
+    dirLight2.position.set(-5, 3, -5);
+    scene.add(dirLight2);
+
+    // Camera
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
+    camera.position.set(0.3, 0.3, 0.4);
+    camera.lookAt(0, 0.1, 0);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.target.set(0, 0.1, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+    controls.update();
+
+    // Ground grid
+    const gridHelper = new THREE.GridHelper(1, 20, 0x333355, 0x222244);
+    scene.add(gridHelper);
+
+    // Axes helper
+    const axesHelper = new THREE.AxesHelper(0.1);
+    scene.add(axesHelper);
+
+    // ─── URDF Loading ─────────────────────────────────────
+    const jointRowsEl = document.getElementById("jointRows");
+    const jointEls = {}; // jointName -> { angleEl, rawEl }
+
+    function rebuildJointPanel() {
+      jointRowsEl.innerHTML = "";
+      const colors = [0xff6b35, 0xff8c42, 0xffa94d, 0xffd166, 0x06d6a0, 0x118ab2, 0x073b4c, 0x8338ec];
+      jointNames.forEach((name, i) => {
+        const color = colors[i % colors.length];
+        const row = document.createElement("div");
+        row.className = "joint-row";
+        row.innerHTML = `
+          <span class="joint-label" style="color:#${color.toString(16).padStart(6,'0')}">${name}</span>
+          <span class="joint-angle" id="jangle-${i}">0.0&deg;</span>
+          <span class="joint-raw" id="jraw-${i}">-</span>
+        `;
+        jointRowsEl.appendChild(row);
+        jointEls[name] = {
+          angleEl: row.querySelector(`#jangle-${i}`),
+          rawEl: row.querySelector(`#jraw-${i}`),
+        };
+      });
+    }
+
+    function fitCameraToRobot() {
+      if (!robot) return;
+      const box = new THREE.Box3().setFromObject(robot);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const dist = maxDim * 1.8;
+
+      // Position camera at a 3/4 view: slightly right, above, and in front
+      camera.position.set(center.x + dist * 0.7, center.y + dist * 0.5, center.z + dist * 0.7);
+      camera.lookAt(center);
+      controls.target.copy(center);
+      controls.update();
+
+      // Move grid to robot base height
+      const baseY = box.min.y;
+      gridHelper.position.y = baseY;
+
+      log(`Loaded: bbox size=(${size.x.toFixed(3)}, ${size.y.toFixed(3)}, ${size.z.toFixed(3)})`, "data");
+    }
+
+    async function loadURDF(urdfPath) {
+      // Remove previous robot
+      if (robot) {
+        scene.remove(robot);
+        robot = null;
+        jointNames = [];
+      }
+
+      log(`Loading URDF: ${urdfPath}...`);
+
+      const manager = new THREE.LoadingManager();
+      const loader = new URDFLoader(manager);
+
+      return new Promise((resolve, reject) => {
+        // Wait for ALL assets (STL meshes) to finish loading before fitting camera
+        manager.onLoad = () => {
+          log(`All meshes loaded`, "success");
+          fitCameraToRobot();
+        };
+
+        loader.load(urdfPath, (result) => {
+          robot = result;
+          // URDF is Z-up, Three.js is Y-up — rotate to stand upright
+          robot.rotation.x = -Math.PI / 2;
+          scene.add(robot);
+
+          // Extract revolute joint names
+          jointNames = [];
+          for (const [name, joint] of Object.entries(robot.joints)) {
+            if (joint.jointType === "revolute" || joint.jointType === "continuous") {
+              jointNames.push(name);
+            }
+          }
+          jointNames.sort((a, b) => {
+            const na = parseInt(a), nb = parseInt(b);
+            if (!isNaN(na) && !isNaN(nb)) return na - nb;
+            return a.localeCompare(b);
+          });
+
+          log(`Loaded ${robot.robotName}: ${jointNames.length} joints [${jointNames.join(", ")}]`, "success");
+
+          rebuildJointPanel();
+          rebuildMappingUI();
+
+          resolve(robot);
+        }, undefined, (err) => {
+          log(`URDF load error: ${err}`, "error");
+          reject(err);
+        });
+      });
+    }
+
+    loadUrdfBtn.addEventListener("click", () => {
+      const url = urdfInput.value.trim();
+      if (url) loadURDF(url);
+    });
+
+    // Auto-load default URDF
+    loadURDF(urdfInput.value.trim()).catch(() => {});
+
+    // ─── Apply servo state to URDF ──────────────────────
+    function updateRobotPose() {
+      if (!robot) return;
+      for (const [servoId, jointName] of Object.entries(jointMapping)) {
+        if (!jointName || !servoState[servoId]) continue;
+        const joint = robot.joints[jointName];
+        if (!joint) continue;
+        const rad = positionToRadians(servoState[servoId].position);
+        robot.setJointValue(jointName, rad);
+      }
+    }
+
+    // ─── Update UI panel ────────────────────────────────
+    function updatePanel() {
+      for (const [servoId, jointName] of Object.entries(jointMapping)) {
+        if (!jointName || !jointEls[jointName]) continue;
+        const state = servoState[servoId];
+        if (!state) continue;
+        const deg = (positionToRadians(state.position) * 180 / Math.PI).toFixed(1);
+        jointEls[jointName].angleEl.innerHTML = `${deg}&deg;`;
+        jointEls[jointName].rawEl.textContent = state.position;
+      }
+
+      document.getElementById("frameCount").textContent = frameCount;
+      document.getElementById("bytesReceived").textContent = formatBytes(bytesTotal);
+
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        document.getElementById("canFps").textContent = fpsCounter;
+        fpsCounter = 0;
+        lastFpsTime = now;
+      }
+
+      document.getElementById("lastUpdate").textContent =
+        new Date().toLocaleTimeString().split(" ")[0];
+    }
+
+    // ─── Resize handler ───────────────────────────────────
+    function onResize() {
+      if (!renderer) return;
+      const container = canvas.parentElement;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+
+    window.addEventListener("resize", onResize);
+    requestAnimationFrame(onResize);
+
+    // ─── Render loop ──────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      if (!renderer) return;
+      controls.update();
+      updateRobotPose();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ─── MoQ Connection (MoqStream pattern) ─────────────
+    // Client publishes on {path}/c2s (track "data"), subscribes to {path}/s2c (track "data")
+    // This matches the Rust MoqStream::connect_to pattern
+
+    let recvBuffer = new Uint8Array(0); // accumulate partial FeeTech responses
+
+    function appendToBuffer(newData) {
+      const combined = new Uint8Array(recvBuffer.length + newData.length);
+      combined.set(recvBuffer);
+      combined.set(newData, recvBuffer.length);
+      recvBuffer = combined;
+    }
+
+    function processRecvBuffer() {
+      // Parse all complete FeeTech responses from buffer
+      while (recvBuffer.length >= 6) {
+        // Find header
+        let headerIdx = -1;
+        for (let i = 0; i < recvBuffer.length - 1; i++) {
+          if (recvBuffer[i] === 0xFF && recvBuffer[i + 1] === 0xFF) {
+            headerIdx = i;
+            break;
+          }
+        }
+        if (headerIdx < 0) { recvBuffer = new Uint8Array(0); return; }
+        if (headerIdx > 0) {
+          // Discard bytes before header
+          recvBuffer = recvBuffer.slice(headerIdx);
+        }
+        if (recvBuffer.length < 4) return; // need at least header + id + length
+
+        const length = recvBuffer[3];
+        const totalLen = 4 + length; // header(2) + id(1) + length(1) + data(length-1) + checksum
+        if (recvBuffer.length < totalLen) return; // incomplete packet
+
+        const servoId = recvBuffer[2];
+        const error = recvBuffer[4];
+        const params = recvBuffer.slice(5, 3 + length); // excludes checksum
+
+        if (error === 0 && params.length >= 2) {
+          const position = params[0] | (params[1] << 8);
+          if (position >= 0 && position <= 4095) {
+            servoState[String(servoId)] = { position, updated: true };
+            frameCount++;
+            fpsCounter++;
+          }
+        }
+
+        bytesTotal += totalLen;
+        recvBuffer = recvBuffer.slice(totalLen);
+      }
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        const relay = relayInput.value;
+        const path = pathInput.value;
+        const s2cUrl = `${relay}/${path}/s2c`;
+        const c2sUrl = `${relay}/${path}/c2s`;
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        running = true;
+        frameCount = 0;
+        bytesTotal = 0;
+        fpsCounter = 0;
+        recvBuffer = new Uint8Array(0);
+
+        setStatus("Connecting...");
+        const connectOpts = buildConnectOpts();
+
+        // Fetch cert hash for diagnostics
+        const certHash = certHashInput.value.trim();
+        if (!certHash) {
+          try {
+            const hashUrl = `${relay}/certificate.sha256`;
+            const resp = await fetch(hashUrl);
+            if (resp.ok) {
+              const hash = await resp.text();
+              log(`Relay cert hash: ${hash.trim().slice(0, 32)}...`, "data");
+            }
+          } catch (e) {
+            log(`Cert hash fetch failed: ${e.message}`, "error");
+          }
+        }
+
+        // Step 1: Connect c2s publisher FIRST
+        // The serial server's MoqStream.accept_at blocks until both s2c and c2s are established.
+        // The c2s subscriber on the server side retries until we publish here.
+        log(`Publishing commands to ${c2sUrl}...`);
+        const pubTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("c2s connection timeout after 8s")), 8000)
+        );
+        pubConnection = await Promise.race([
+          Moq.Connection.connect(new URL(c2sUrl), connectOpts),
+          pubTimeout,
+        ]);
+        pubBroadcast = new Moq.Broadcast();
+        pubConnection.publish(Moq.Path.from(""), pubBroadcast);
+        log("c2s broadcast published, waiting for serial server...", "data");
+
+        // Wait for the serial server to subscribe to our commands
+        const reqTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("No subscriber after 15s — is moq-serial-server running on this path?")), 15000)
+        );
+        const request = await Promise.race([pubBroadcast.requested(), reqTimeout]);
+        if (!request) { throw new Error("Command broadcast closed"); }
+        pubTrack = request.track;
+        log(`Command track "${pubTrack.name}" active`, "success");
+
+        // Step 2: Now subscribe to s2c (serial responses)
+        log(`Subscribing to ${s2cUrl}...`);
+        const subTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("s2c connection timeout after 8s")), 8000)
+        );
+        subConnection = await Promise.race([
+          Moq.Connection.connect(new URL(s2cUrl), connectOpts),
+          subTimeout,
+        ]);
+        const broadcast = subConnection.consume(Moq.Path.from(""));
+        const track = broadcast.subscribe("data", 0);
+        log("Subscribed to s2c 'data' track", "success");
+
+        // Step 3: Start query loop (send FeeTech read commands)
+        const servoIds = Object.keys(jointMapping).map(Number).filter(n => !isNaN(n) && n > 0);
+        let idx = 0;
+        queryInterval = setInterval(() => {
+          if (!pubTrack || servoIds.length === 0) return;
+          const servoId = servoIds[idx % servoIds.length];
+          const packet = stsReadPacket(servoId, STS_PRESENT_POSITION, 2);
+          const group = pubTrack.appendGroup();
+          group.writeFrame(packet);
+          group.close();
+          idx++;
+        }, 15); // ~67Hz total, spread across servos
+        queryActive = true;
+        queryBtn.classList.add("active");
+        queryBtn.textContent = "Stop Query";
+        queryBtn.disabled = false;
+        log(`Querying servos [${servoIds.join(",")}] at ~${Math.round(1000/15)}Hz`, "success");
+
+        setStatus("Streaming");
+
+        // Step 4: Read responses
+        while (running) {
+          const group = await track.nextGroup();
+          if (!group) { log("Track ended"); break; }
+
+          while (running) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+            const bytes = new Uint8Array(frame);
+            appendToBuffer(bytes);
+            processRecvBuffer();
+          }
+        }
+
+        setStatus("Ended");
+      } catch (e) {
+        log(`Error: ${e.message}`, "error");
+        console.error(e);
+        setStatus("Error");
+      } finally {
+        cleanup();
+      }
+    });
+
+    function cleanup() {
+      if (queryInterval) {
+        clearInterval(queryInterval);
+        queryInterval = null;
+      }
+      queryActive = false;
+      queryBtn.classList.remove("active");
+      queryBtn.textContent = "Query Servos";
+      queryBtn.disabled = true;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      if (pubTrack) { try { pubTrack.close(); } catch {} pubTrack = null; }
+      if (pubBroadcast) { try { pubBroadcast.close(); } catch {} pubBroadcast = null; }
+      if (pubConnection) { try { pubConnection.close(); } catch {} pubConnection = null; }
+    }
+
+    stopBtn.addEventListener("click", async () => {
+      running = false;
+      cleanup();
+      setStatus("Stopping...");
+      if (subConnection) {
+        try { subConnection.close(); } catch {}
+        subConnection = null;
+      }
+      setStatus("Disconnected");
+      log("Disconnected", "success");
+    });
+
+    // Query button toggles the polling interval (connection already established)
+    queryBtn.addEventListener("click", () => {
+      if (!queryActive) {
+        // Restart query interval
+        const servoIds = Object.keys(jointMapping).map(Number).filter(n => !isNaN(n) && n > 0);
+        let idx = 0;
+        queryInterval = setInterval(() => {
+          if (!pubTrack || servoIds.length === 0) return;
+          const servoId = servoIds[idx % servoIds.length];
+          const packet = stsReadPacket(servoId, STS_PRESENT_POSITION, 2);
+          const group = pubTrack.appendGroup();
+          group.writeFrame(packet);
+          group.close();
+          idx++;
+        }, 15);
+        queryActive = true;
+        queryBtn.classList.add("active");
+        queryBtn.textContent = "Stop Query";
+        log("Query resumed", "success");
+      } else {
+        if (queryInterval) { clearInterval(queryInterval); queryInterval = null; }
+        queryActive = false;
+        queryBtn.classList.remove("active");
+        queryBtn.textContent = "Query Servos";
+        log("Query paused");
+      }
+    });
+
+    // Periodic panel update
+    setInterval(updatePanel, 100);
+
+    log("Ready. Load a URDF and connect to start.", "info");
+
+    // Auto-connect if query params provided
+    if (params.has("relay") || params.has("path")) {
+      log("Auto-connecting from query params...", "info");
+      startBtn.click();
+    }
+  </script>
+</body>
+</html>

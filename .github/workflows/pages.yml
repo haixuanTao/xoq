@@ -1,0 +1,33 @@
+name: Deploy Examples to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: js
+        run: npm ci
+
+      - name: Build static site
+        working-directory: js
+        run: npm run build:pages
+
+      - name: Add HF Space README
+        run: printf '%s\n' '---' 'title: XoQ Examples' 'emoji: 🤖' 'colorFrom: blue' 'colorTo: green' 'sdk: static' 'pinned: false' '---' > js/dist-pages/README.md
+
+      - name: Deploy to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install huggingface_hub
+          huggingface-cli upload haixuantao/openarm js/dist-pages . --repo-type space
