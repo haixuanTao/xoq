@@ -18,6 +18,7 @@ use crate::iroh::{IrohConnection, IrohServerBuilder};
 /// A server that bridges a local CAN interface to remote clients over iroh P2P.
 /// Optionally broadcasts CAN state via MoQ for browser monitoring.
 pub struct CanServer {
+    interface: String,
     server_id: String,
     can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
     can_read_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<AnyCanFrame>>>,
@@ -352,6 +353,7 @@ impl CanServer {
             .unwrap_or_else(|| format!("anon/xoq-can-{}", interface));
 
         Ok(Self {
+            interface: interface.to_string(),
             server_id,
             can_write_tx,
             can_read_rx: std::sync::Mutex::new(Some(can_read_rx)),
@@ -371,7 +373,11 @@ impl CanServer {
 
     /// Run the bridge server (blocks forever, handling connections).
     pub async fn run(&self) -> Result<()> {
-        tracing::info!("CAN bridge server running. ID: {}", self.server_id);
+        tracing::info!(
+            "[{}] CAN bridge server running. ID: {}",
+            self.interface,
+            self.server_id
+        );
 
         // Spawn MoQ state publisher if configured
         let _moq_handle = if self.moq_relay.is_some() {

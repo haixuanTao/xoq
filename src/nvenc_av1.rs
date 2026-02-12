@@ -7,7 +7,7 @@ use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE,
-        NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO,
+        NV_ENC_PRESET_P4_GUID, NV_ENC_PRESET_P7_GUID, NV_ENC_TUNING_INFO, _NV_ENC_PARAMS_RC_MODE,
     },
     Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, Session,
 };
@@ -39,11 +39,45 @@ impl Drop for NvencAv1Encoder {
     }
 }
 
+enum RateControl {
+    Bitrate(u32),
+    ConstQP(u32),
+}
+
 impl NvencAv1Encoder {
-    /// Create a new AV1 encoder.
+    /// Create a new AV1 encoder with bitrate-based rate control (CBR).
     ///
     /// - `ten_bit`: if true, uses P010 (10-bit YUV420) buffer format; otherwise NV12 (8-bit).
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32, ten_bit: bool) -> Result<Self> {
+        Self::new_inner(width, height, fps, ten_bit, RateControl::Bitrate(bitrate))
+    }
+
+    /// Create a new AV1 encoder with constant QP rate control (best quality).
+    ///
+    /// - `qp`: quantization parameter (0 = lossless, ~15-20 = very high quality, ~30 = medium).
+    /// - Uses P7 preset (highest quality) and high-quality tuning.
+    pub fn new_cqp(width: u32, height: u32, fps: u32, qp: u32, ten_bit: bool) -> Result<Self> {
+        Self::new_inner(width, height, fps, ten_bit, RateControl::ConstQP(qp))
+    }
+
+    fn new_inner(
+        width: u32,
+        height: u32,
+        fps: u32,
+        ten_bit: bool,
+        rc: RateControl,
+    ) -> Result<Self> {
+        let (preset, tuning) = match rc {
+            RateControl::Bitrate(_) => (
+                NV_ENC_PRESET_P4_GUID,
+                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+            ),
+            RateControl::ConstQP(_) => (
+                NV_ENC_PRESET_P7_GUID,
+                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY,
+            ),
+        };
+
         let cuda_ctx = CudaContext::new(0)
             .map_err(|e| anyhow::anyhow!("Failed to create CUDA context: {}", e))?;
 
@@ -51,19 +85,26 @@ impl NvencAv1Encoder {
             .map_err(|e| anyhow::anyhow!("Failed to initialize NVENC: {:?}", e))?;
 
         let mut preset_config = encoder
-            .get_preset_config(
-                NV_ENC_CODEC_AV1_GUID,
-                NV_ENC_PRESET_P4_GUID,
-                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
-            )
+            .get_preset_config(NV_ENC_CODEC_AV1_GUID, preset, tuning)
             .map_err(|e| anyhow::anyhow!("Failed to get AV1 preset config: {:?}", e))?;
 
         let config = &mut preset_config.presetCfg;
         config.gopLength = fps;
         config.frameIntervalP = 1;
-        config.rcParams.averageBitRate = bitrate;
-        config.rcParams.maxBitRate = bitrate;
-        config.rcParams.vbvBufferSize = bitrate / fps;
+
+        match rc {
+            RateControl::Bitrate(bitrate) => {
+                config.rcParams.averageBitRate = bitrate;
+                config.rcParams.maxBitRate = bitrate;
+                config.rcParams.vbvBufferSize = bitrate / fps;
+            }
+            RateControl::ConstQP(qp) => {
+                config.rcParams.rateControlMode = _NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CONSTQP;
+                config.rcParams.constQP.qpInterP = qp;
+                config.rcParams.constQP.qpInterB = qp;
+                config.rcParams.constQP.qpIntra = qp;
+            }
+        }
 
         // AV1-specific config
         unsafe {
@@ -83,8 +124,8 @@ impl NvencAv1Encoder {
 
         let mut init_params = EncoderInitParams::new(NV_ENC_CODEC_AV1_GUID, width, height);
         init_params
-            .preset_guid(NV_ENC_PRESET_P4_GUID)
-            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
+            .preset_guid(preset)
+            .tuning_info(tuning)
             .framerate(fps, 1)
             .encode_config(config);
 
