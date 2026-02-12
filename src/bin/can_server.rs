@@ -1,6 +1,6 @@
 //! CAN bridge server - bridges local CAN interface to remote clients
 //!
-//! Usage: can_server <interface[:fd]>... [--key-dir <path>]
+//! Usage: can_server <interface[:fd]>... [--key-dir <path>] [--moq-relay <url>] [--moq-path <path>] [--moq-insecure]
 //!
 //! Examples:
 //!   can_server can0                      # Single interface (backward compatible)
@@ -8,6 +8,9 @@
 //!   can_server can0 can1 vcan0           # Multiple interfaces
 //!   can_server can0:fd can1              # Mixed (can0=FD, can1=standard)
 //!   can_server can0 --key-dir /etc/xoq   # Custom key directory
+//!   can_server can0:fd --moq-relay https://cdn.1ms.ai                        # iroh + MoQ
+//!   can_server can0:fd --moq-relay https://cdn.1ms.ai --moq-path anon/my-robot
+//!   can_server can0:fd can1:fd --moq-relay https://cdn.1ms.ai                # multi-interface + MoQ
 
 use anyhow::Result;
 use std::env;
@@ -21,9 +24,12 @@ struct InterfaceConfig {
     interface: String,
     enable_fd: bool,
     identity_path: PathBuf,
+    moq_relay: Option<String>,
+    moq_path: Option<String>,
+    moq_insecure: bool,
 }
 
-/// Parse command line arguments into interface configurations
+/// Parse command line arguments
 fn parse_args() -> Option<(Vec<InterfaceConfig>, PathBuf)> {
     let args: Vec<String> = env::args().collect();
 
@@ -33,6 +39,9 @@ fn parse_args() -> Option<(Vec<InterfaceConfig>, PathBuf)> {
 
     let mut interfaces = Vec::new();
     let mut key_dir = PathBuf::from(".");
+    let mut moq_relay: Option<String> = None;
+    let mut moq_path: Option<String> = None;
+    let mut moq_insecure = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -47,6 +56,34 @@ fn parse_args() -> Option<(Vec<InterfaceConfig>, PathBuf)> {
                 eprintln!("Error: --key-dir requires a path argument");
                 return None;
             }
+        }
+
+        if arg == "--moq-relay" {
+            if i + 1 < args.len() {
+                moq_relay = Some(args[i + 1].clone());
+                i += 2;
+                continue;
+            } else {
+                eprintln!("Error: --moq-relay requires a URL argument");
+                return None;
+            }
+        }
+
+        if arg == "--moq-path" {
+            if i + 1 < args.len() {
+                moq_path = Some(args[i + 1].clone());
+                i += 2;
+                continue;
+            } else {
+                eprintln!("Error: --moq-path requires a path argument");
+                return None;
+            }
+        }
+
+        if arg == "--moq-insecure" {
+            moq_insecure = true;
+            i += 1;
+            continue;
         }
 
         // Skip legacy flags
@@ -79,6 +116,9 @@ fn parse_args() -> Option<(Vec<InterfaceConfig>, PathBuf)> {
                 interface,
                 enable_fd,
                 identity_path,
+                moq_relay: moq_relay.clone(),
+                moq_path: moq_path.clone(),
+                moq_insecure,
             }
         })
         .collect();
@@ -87,7 +127,7 @@ fn parse_args() -> Option<(Vec<InterfaceConfig>, PathBuf)> {
 }
 
 fn print_usage() {
-    println!("Usage: can_server <interface[:fd]>... [--key-dir <path>]");
+    println!("Usage: can_server <interface[:fd]>... [--key-dir <path>] [--moq-relay <url>] [--moq-path <path>] [--moq-insecure]");
     println!();
     println!("Examples:");
     println!("  can_server can0                      # Single interface");
@@ -95,10 +135,18 @@ fn print_usage() {
     println!("  can_server can0 can1 vcan0           # Multiple interfaces");
     println!("  can_server can0:fd can1              # Mixed (can0=FD, can1=standard)");
     println!("  can_server can0 --key-dir /etc/xoq   # Custom key directory");
+    println!(
+        "  can_server can0:fd --moq-relay https://cdn.1ms.ai                          # iroh + MoQ"
+    );
+    println!("  can_server can0:fd --moq-relay https://cdn.1ms.ai --moq-path anon/my-robot # custom path");
+    println!("  can_server can0:fd can1:fd --moq-relay https://cdn.1ms.ai                  # multi + MoQ");
     println!();
     println!("Options:");
-    println!("  :fd                 Append to interface name to enable CAN FD");
-    println!("  --key-dir           Directory for identity key files (default: current dir)");
+    println!("  :fd                  Append to interface name to enable CAN FD");
+    println!("  --key-dir <path>     Directory for identity key files (default: current dir)");
+    println!("  --moq-relay <url>    Also broadcast CAN state via MoQ relay for browsers");
+    println!("  --moq-path <path>    MoQ broadcast path (default: anon/xoq-can-<interface>)");
+    println!("  --moq-insecure       Disable TLS verification (for self-signed certs)");
     println!();
     println!("Available CAN interfaces:");
     match xoq::list_interfaces() {
@@ -148,6 +196,9 @@ async fn run_server(config: &InterfaceConfig) -> Result<()> {
         &config.interface,
         config.enable_fd,
         Some(&identity_path_str),
+        config.moq_relay.as_deref(),
+        config.moq_path.as_deref(),
+        config.moq_insecure,
     )
     .await?;
 
@@ -163,6 +214,18 @@ async fn run_server(config: &InterfaceConfig) -> Result<()> {
         config.interface,
         config.identity_path.display()
     );
+    if let Some(ref relay) = config.moq_relay {
+        tracing::info!(
+            "[{}] MoQ relay: {}{}",
+            config.interface,
+            relay,
+            if config.moq_insecure {
+                " (insecure)"
+            } else {
+                ""
+            }
+        );
+    }
     tracing::info!("[{}] Waiting for connections...", config.interface);
 
     server.run().await?;

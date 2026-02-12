@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html><head><title>Minimal MoQ + Three.js Test</title></head>
+<body>
+  <button id="startBtn">Connect</button>
+  <pre id="log"></pre>
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+    import URDFLoader from "urdf-loader";
+    import * as Moq from "@moq/lite";
+
+    const logEl = document.getElementById("log");
+    function log(msg) { logEl.textContent += msg + "\n"; console.log(msg); }
+
+    log("Three.js r" + THREE.REVISION);
+
+    // 3D scene (same as openarm)
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 100);
+    const renderer = new THREE.WebGLRenderer();
+    renderer.setSize(320, 240);
+    document.body.appendChild(renderer.domElement);
+    function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+    animate();
+
+    // URDF loader (same as openarm)
+    const urdfLoader = new URDFLoader();
+    urdfLoader.load("./assets/openarm_v10.urdf", result => {
+      log("URDF loaded");
+      scene.add(result);
+    });
+
+    // Connect via click handler (same pattern as openarm)
+    async function connectRealSense() {
+      const relay = "https://cdn.1ms.ai";
+      const path = "anon/realsense";
+      const fullUrl = `${relay}/${path}`;
+      const connectOpts = {};
+
+      log("Connecting to " + fullUrl + "...");
+      const conn = await Moq.Connection.connect(new URL(fullUrl), connectOpts);
+      log("Connected!");
+
+      const broadcast = conn.consume(Moq.Path.from(""));
+      const videoTrack = broadcast.subscribe("video", 0);
+      const depthTrack = broadcast.subscribe("depth", 0);
+      log("Subscribed to video + depth");
+
+      let count = 0;
+      async function readTrack(track, name) {
+        while (count < 20) {
+          const group = await track.nextGroup();
+          if (!group) { log(name + " ended"); break; }
+          while (true) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+            count++;
+            if (count <= 3) log(name + " frame: " + frame.byteLength + " bytes");
+          }
+        }
+      }
+
+      readTrack(videoTrack, "video").catch(e => log("video err: " + e.message));
+      readTrack(depthTrack, "depth").catch(e => log("depth err: " + e.message));
+    }
+
+    document.getElementById("startBtn").addEventListener("click", async () => {
+      try { await connectRealSense(); } catch (e) { log("Error: " + e.message); }
+    });
+
+    // Auto-connect after delay (same as openarm)
+    setTimeout(() => document.getElementById("startBtn").click(), 3000);
+    log("Auto-connecting in 3s...");
+  </script>
+</body>
+</html>

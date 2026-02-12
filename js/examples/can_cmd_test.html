@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CAN Command Publisher Test</title>
+  <style>
+    body { font-family: monospace; background: #1a1a1a; color: #0f0; padding: 1rem; }
+    .error { color: #f00; }
+    .info { color: #ff0; }
+    .success { color: #0f0; }
+    .data { color: #0ff; }
+    button { font-size: 1rem; padding: 0.4rem 0.8rem; margin: 0.3rem; cursor: pointer; }
+    input { font-family: monospace; font-size: 0.9rem; padding: 0.3rem; background: #333; color: #fff; border: 1px solid #666; width: 350px; }
+    label { display: block; margin: 0.3rem 0; }
+    #log { margin-top: 1rem; max-height: 70vh; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h2>CAN Command Publisher Test</h2>
+  <label>Relay: <input type="text" id="relay" value="https://cdn.1ms.ai" /></label>
+  <label>Commands path: <input type="text" id="cmdPath" value="anon/xoq-can-can0/commands" /></label>
+  <label>State path: <input type="text" id="statePath" value="anon/xoq-can-can0/state" /></label>
+  <div>
+    <button id="testSub">1. Test State Subscribe</button>
+    <button id="testPub">2. Test Command Publish</button>
+    <button id="testBoth">3. Test Both (sub + pub)</button>
+    <button id="stop">Stop All</button>
+  </div>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as Moq from "@moq/lite";
+
+    const logEl = document.getElementById("log");
+    let stopFlag = false;
+
+    function log(msg, cls = "") {
+      const el = document.createElement("div");
+      el.textContent = `[${new Date().toISOString().slice(11,23)}] ${msg}`;
+      if (cls) el.className = cls;
+      logEl.appendChild(el);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
+
+    function hexBytes(arr) {
+      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    }
+
+    // MIT zero-torque command
+    function encodeMitZeroTorque() {
+      const p = 0x8000, v = 0x800, kp = 0, kd = 0, t = 0x800;
+      return new Uint8Array([
+        p >> 8, p & 0xFF,
+        v >> 4,
+        ((v & 0xF) << 4) | (kp >> 8),
+        kp & 0xFF,
+        kd >> 4,
+        ((kd & 0xF) << 4) | (t >> 8),
+        t & 0xFF,
+      ]);
+    }
+
+    // Wire-encode CAN frame
+    function encodeCanFrame(canId, data) {
+      const buf = new Uint8Array(6 + data.length);
+      buf[0] = 0x00;
+      buf[1] = canId & 0xFF;
+      buf[2] = (canId >> 8) & 0xFF;
+      buf[3] = (canId >> 16) & 0xFF;
+      buf[4] = (canId >> 24) & 0xFF;
+      buf[5] = data.length;
+      buf.set(data, 6);
+      return buf;
+    }
+
+    // ─── Test 1: State Subscribe ─────────────────────
+    document.getElementById("testSub").addEventListener("click", async () => {
+      stopFlag = false;
+      const relay = document.getElementById("relay").value;
+      const statePath = document.getElementById("statePath").value;
+      const url = `${relay}/${statePath}`;
+
+      try {
+        log(`[SUB] Connecting to ${url}...`, "info");
+        const conn = await Moq.Connection.connect(new URL(url));
+        log("[SUB] Connected!", "success");
+
+        log('[SUB] Calling consume(Path.from(""))...', "info");
+        const broadcast = conn.consume(Moq.Path.from(""));
+        log("[SUB] consume() returned", "success");
+
+        log('[SUB] Calling subscribe("can", 0)...', "info");
+        const track = broadcast.subscribe("can", 0);
+        log("[SUB] subscribe() returned, waiting for groups...", "success");
+
+        let count = 0;
+        while (!stopFlag) {
+          const group = await track.nextGroup();
+          if (!group) { log("[SUB] No more groups", "info"); break; }
+
+          while (!stopFlag) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+            count++;
+            const bytes = new Uint8Array(frame);
+            if (count <= 20) {
+              log(`[SUB] Frame ${count}: ${bytes.length}B [${hexBytes(bytes.slice(0, 14))}]`, "data");
+            } else if (count % 100 === 0) {
+              log(`[SUB] ${count} frames received`, "data");
+            }
+          }
+        }
+        log(`[SUB] Done. Total frames: ${count}`);
+        await conn.close();
+      } catch (e) {
+        log(`[SUB] ERROR: ${e.message}`, "error");
+        console.error(e);
+      }
+    });
+
+    // ─── Test 2: Command Publish ─────────────────────
+    document.getElementById("testPub").addEventListener("click", async () => {
+      stopFlag = false;
+      const relay = document.getElementById("relay").value;
+      const cmdPath = document.getElementById("cmdPath").value;
+      const url = `${relay}/${cmdPath}`;
+
+      try {
+        log(`[PUB] Connecting to ${url}...`, "info");
+        const conn = await Moq.Connection.connect(new URL(url));
+        log("[PUB] Connected!", "success");
+
+        log("[PUB] Creating Broadcast...", "info");
+        const broadcast = new Moq.Broadcast();
+
+        log('[PUB] Calling publish(Path.from(""), broadcast)...', "info");
+        conn.publish(Moq.Path.from(""), broadcast);
+        log("[PUB] publish() returned", "success");
+
+        log("[PUB] Calling broadcast.requested() — waiting for CAN server to subscribe...", "info");
+
+        // Race with a timeout so we can see if it hangs
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout: no subscriber after 10s")), 10000)
+        );
+
+        const request = await Promise.race([
+          broadcast.requested(),
+          timeoutPromise,
+        ]);
+
+        if (!request) {
+          log("[PUB] broadcast.requested() returned undefined (closed)", "error");
+          return;
+        }
+
+        log(`[PUB] Got track request: name="${request.track.name}", priority=${request.priority}`, "success");
+        const track = request.track;
+
+        // Send 10 test frames
+        const mitCmd = encodeMitZeroTorque();
+        log(`[PUB] MIT zero-torque cmd: [${hexBytes(mitCmd)}]`, "data");
+
+        for (let i = 0; i < 10 && !stopFlag; i++) {
+          const canId = (i % 8) + 1;
+          const frame = encodeCanFrame(canId, mitCmd);
+          log(`[PUB] Sending CAN frame to motor ${canId}: ${frame.length}B [${hexBytes(frame)}]`, "data");
+          track.writeFrame(frame);
+          await new Promise(r => setTimeout(r, 50));
+        }
+
+        log("[PUB] Sent 10 test frames. Closing...", "success");
+        track.close();
+        broadcast.close();
+        await conn.close();
+        log("[PUB] Done.");
+      } catch (e) {
+        log(`[PUB] ERROR: ${e.message}`, "error");
+        console.error(e);
+      }
+    });
+
+    // ─── Test 3: Both simultaneously ─────────────────
+    document.getElementById("testBoth").addEventListener("click", async () => {
+      stopFlag = false;
+      const relay = document.getElementById("relay").value;
+      const cmdPath = document.getElementById("cmdPath").value;
+      const statePath = document.getElementById("statePath").value;
+
+      let subConn, pubConn, pubTrack, pubBroadcast, interval;
+
+      try {
+        // Step 1: Connect state subscriber
+        const subUrl = `${relay}/${statePath}`;
+        log(`[BOTH] Connecting state subscriber to ${subUrl}...`, "info");
+        subConn = await Moq.Connection.connect(new URL(subUrl));
+        log("[BOTH] State subscriber connected!", "success");
+
+        const subBroadcast = subConn.consume(Moq.Path.from(""));
+        const subTrack = subBroadcast.subscribe("can", 0);
+        log("[BOTH] Subscribed to state track", "success");
+
+        // Step 2: Connect command publisher
+        const pubUrl = `${relay}/${cmdPath}`;
+        log(`[BOTH] Connecting command publisher to ${pubUrl}...`, "info");
+        pubConn = await Moq.Connection.connect(new URL(pubUrl));
+        log("[BOTH] Command publisher connected!", "success");
+
+        pubBroadcast = new Moq.Broadcast();
+        pubConn.publish(Moq.Path.from(""), pubBroadcast);
+        log("[BOTH] Published broadcast, waiting for CAN server subscriber...", "info");
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout: no subscriber after 10s")), 10000)
+        );
+        const request = await Promise.race([
+          pubBroadcast.requested(),
+          timeoutPromise,
+        ]);
+
+        if (!request) {
+          log("[BOTH] No track request received", "error");
+          return;
+        }
+
+        pubTrack = request.track;
+        log(`[BOTH] CAN server subscribed to track "${pubTrack.name}"`, "success");
+
+        // Step 3: Start query loop
+        const mitCmd = encodeMitZeroTorque();
+        let motorIdx = 0;
+        let sendCount = 0;
+
+        interval = setInterval(() => {
+          if (!pubTrack || stopFlag) return;
+          const canId = motorIdx + 1;
+          const frame = encodeCanFrame(canId, mitCmd);
+          pubTrack.writeFrame(frame);
+          sendCount++;
+          motorIdx = (motorIdx + 1) % 8;
+          if (sendCount <= 8) {
+            log(`[BOTH] Sent query to motor ${canId}`, "data");
+          } else if (sendCount % 100 === 0) {
+            log(`[BOTH] Sent ${sendCount} commands`, "data");
+          }
+        }, 10);
+
+        log("[BOTH] Query loop running at 100Hz, reading state responses...", "success");
+
+        // Step 4: Read state responses
+        let recvCount = 0;
+        while (!stopFlag) {
+          const group = await subTrack.nextGroup();
+          if (!group) { log("[BOTH] State track ended"); break; }
+
+          while (!stopFlag) {
+            const frame = await group.readFrame();
+            if (!frame) break;
+            recvCount++;
+            const bytes = new Uint8Array(frame);
+            if (recvCount <= 16) {
+              // Parse CAN ID from wire format
+              const canId = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24);
+              log(`[BOTH] State frame ${recvCount}: CAN ID 0x${canId.toString(16).padStart(2,'0')} ${bytes.length}B`, "data");
+            } else if (recvCount % 100 === 0) {
+              log(`[BOTH] ${recvCount} state frames received, ${sendCount} commands sent`, "data");
+            }
+          }
+        }
+      } catch (e) {
+        log(`[BOTH] ERROR: ${e.message}`, "error");
+        console.error(e);
+      } finally {
+        if (interval) clearInterval(interval);
+        if (pubTrack) try { pubTrack.close(); } catch(e) {}
+        if (pubBroadcast) try { pubBroadcast.close(); } catch(e) {}
+        if (pubConn) try { pubConn.close(); } catch(e) {}
+        if (subConn) try { subConn.close(); } catch(e) {}
+        log("[BOTH] Cleaned up.");
+      }
+    });
+
+    // ─── Stop ────────────────────────────────────────
+    document.getElementById("stop").addEventListener("click", () => {
+      stopFlag = true;
+      log("Stop requested", "info");
+    });
+
+    log("Ready. Use the buttons to test each step.", "info");
+    log("Test 1: Subscribe to state (verify connection works)", "info");
+    log("Test 2: Publish commands (verify CAN server sees them)", "info");
+    log("Test 3: Both together (full loop)", "info");
+  </script>
+</body>
+</html>

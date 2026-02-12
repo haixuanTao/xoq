@@ -16,11 +16,17 @@ use crate::can_types::{wire, AnyCanFrame};
 use crate::iroh::{IrohConnection, IrohServerBuilder};
 
 /// A server that bridges a local CAN interface to remote clients over iroh P2P.
+/// Optionally broadcasts CAN state via MoQ for browser monitoring.
 pub struct CanServer {
     server_id: String,
     can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
     can_read_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<AnyCanFrame>>>,
     endpoint: Arc<crate::iroh::IrohServer>,
+    moq_tx: Option<tokio::sync::mpsc::Sender<AnyCanFrame>>,
+    moq_read_rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<AnyCanFrame>>>,
+    moq_relay: Option<String>,
+    moq_path: String,
+    moq_insecure: bool,
 }
 
 /// Reader thread for CAN FD sockets.
@@ -268,14 +274,27 @@ fn can_writer_thread_std(
 
 impl CanServer {
     /// Create a new CAN bridge server.
+    ///
+    /// If `moq_relay` is provided, CAN read frames are also fan-out to a MoQ
+    /// publisher for browser monitoring.
     pub async fn new(
         interface: &str,
         enable_fd: bool,
         identity_path: Option<&str>,
+        moq_relay: Option<&str>,
+        moq_path: Option<&str>,
+        moq_insecure: bool,
     ) -> Result<Self> {
         let (can_read_tx, can_read_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(16);
         let (can_write_tx, can_write_rx) = tokio::sync::mpsc::channel::<AnyCanFrame>(1);
         let write_count = Arc::new(AtomicU64::new(0));
+
+        let (moq_tx, moq_rx) = if moq_relay.is_some() {
+            let (tx, rx) = tokio::sync::mpsc::channel(128);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
         if enable_fd {
             let socket = socketcan::CanFdSocket::open(interface).map_err(|e| {
@@ -328,11 +347,20 @@ impl CanServer {
         let server = builder.bind().await?;
         let server_id = server.id().to_string();
 
+        let moq_path = moq_path
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| format!("anon/xoq-can-{}", interface));
+
         Ok(Self {
             server_id,
             can_write_tx,
             can_read_rx: std::sync::Mutex::new(Some(can_read_rx)),
             endpoint: Arc::new(server),
+            moq_tx,
+            moq_read_rx: std::sync::Mutex::new(moq_rx),
+            moq_relay: moq_relay.map(|s| s.to_string()),
+            moq_path,
+            moq_insecure,
         })
     }
 
@@ -344,6 +372,21 @@ impl CanServer {
     /// Run the bridge server (blocks forever, handling connections).
     pub async fn run(&self) -> Result<()> {
         tracing::info!("CAN bridge server running. ID: {}", self.server_id);
+
+        // Spawn MoQ state publisher if configured
+        let _moq_handle = if self.moq_relay.is_some() {
+            let rx = self.moq_read_rx.lock().unwrap().take().unwrap();
+            let relay = self.moq_relay.clone().unwrap();
+            let path = self.moq_path.clone();
+            let insecure = self.moq_insecure;
+            Some(tokio::spawn(async move {
+                if let Err(e) = moq_state_publisher(&relay, &path, insecure, rx).await {
+                    tracing::error!("MoQ publisher error: {}", e);
+                }
+            }))
+        } else {
+            None
+        };
 
         let mut current_conn: Option<(
             CancellationToken,
@@ -357,12 +400,6 @@ impl CanServer {
             };
 
             tracing::info!("Client connected: {}", conn.remote_id());
-
-            // Log connection type (direct vs relay)
-            if let Some(mut watcher) = self.endpoint.endpoint().conn_type(conn.remote_id().into()) {
-                let conn_type = watcher.get();
-                tracing::warn!("Connection type: {:?}", conn_type);
-            }
 
             if let Some((cancel, handle)) = current_conn.take() {
                 tracing::info!("New client connected, closing previous connection");
@@ -387,9 +424,11 @@ impl CanServer {
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             let write_tx = self.can_write_tx.clone();
+            let moq_tx = self.moq_tx.clone();
 
             let handle = tokio::spawn(async move {
-                let (result, rx) = handle_connection(conn, rx, write_tx, cancel_clone).await;
+                let (result, rx) =
+                    handle_connection(conn, rx, write_tx, moq_tx, cancel_clone).await;
                 if let Err(e) = &result {
                     tracing::error!("Connection error: {}", e);
                 }
@@ -424,9 +463,10 @@ impl CanServer {
                 .expect("CAN read receiver should be available");
 
             let write_tx = self.can_write_tx.clone();
+            let moq_tx = self.moq_tx.clone();
             let cancel = CancellationToken::new();
 
-            let (result, rx) = handle_connection(conn, rx, write_tx, cancel).await;
+            let (result, rx) = handle_connection(conn, rx, write_tx, moq_tx, cancel).await;
 
             self.can_read_rx.lock().unwrap().replace(rx);
 
@@ -446,6 +486,7 @@ async fn handle_connection(
     conn: IrohConnection,
     mut can_read_rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
     can_write_tx: tokio::sync::mpsc::Sender<AnyCanFrame>,
+    moq_tx: Option<tokio::sync::mpsc::Sender<AnyCanFrame>>,
     cancel: CancellationToken,
 ) -> (Result<()>, tokio::sync::mpsc::Receiver<AnyCanFrame>) {
     let stream = tokio::select! {
@@ -497,12 +538,20 @@ async fn handle_connection(
                 }
             };
 
+            if let Some(ref moq_tx) = moq_tx {
+                let _ = moq_tx.try_send(first.clone());
+            }
             batch_buf.extend_from_slice(&wire::encode(&first));
 
             // Greedily collect more ready frames (up to 8 total)
             for _ in 1..8 {
                 match can_read_rx.try_recv() {
-                    Ok(frame) => batch_buf.extend_from_slice(&wire::encode(&frame)),
+                    Ok(frame) => {
+                        if let Some(ref moq_tx) = moq_tx {
+                            let _ = moq_tx.try_send(frame.clone());
+                        }
+                        batch_buf.extend_from_slice(&wire::encode(&frame));
+                    }
                     Err(_) => break,
                 }
             }
@@ -596,4 +645,61 @@ async fn handle_connection(
     };
 
     (result, can_read_rx)
+}
+
+/// Publish CAN frames to MoQ relay for browser monitoring.
+async fn moq_state_publisher(
+    relay: &str,
+    path: &str,
+    insecure: bool,
+    mut rx: tokio::sync::mpsc::Receiver<AnyCanFrame>,
+) -> Result<()> {
+    use crate::moq::MoqBuilder;
+
+    let mut builder = MoqBuilder::new().relay(relay);
+    if insecure {
+        builder = builder.disable_tls_verify();
+    }
+
+    // Retry connection with backoff
+    let mut delay = Duration::from_secs(1);
+    let (_pub, mut writer) = loop {
+        match builder
+            .clone()
+            .path(&format!("{}/state", path))
+            .connect_publisher_with_track("can")
+            .await
+        {
+            Ok(result) => break result,
+            Err(e) => {
+                tracing::warn!("MoQ connect failed: {}, retrying in {:?}...", e, delay);
+                // Drain stale frames while waiting
+                while rx.try_recv().is_ok() {}
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+        }
+    };
+    tracing::info!("MoQ state publisher connected on {}/state", path);
+
+    let mut batch_buf = Vec::with_capacity(1024);
+    loop {
+        // Wait for at least one frame
+        let first = match rx.recv().await {
+            Some(frame) => frame,
+            None => break,
+        };
+
+        batch_buf.clear();
+        batch_buf.extend_from_slice(&wire::encode(&first));
+
+        // Drain all immediately available frames into the same batch
+        while let Ok(frame) = rx.try_recv() {
+            batch_buf.extend_from_slice(&wire::encode(&frame));
+        }
+
+        // Single MoQ group write for the entire batch
+        writer.write(batch_buf.clone());
+    }
+    Ok(())
 }

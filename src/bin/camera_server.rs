@@ -33,24 +33,16 @@ use xoq::camera_macos::Camera as CameraMacos;
 
 // NVENC imports (Linux)
 #[cfg(feature = "nvenc")]
-use cudarc::driver::CudaContext;
-#[cfg(feature = "nvenc")]
-use nvidia_video_codec_sdk::{
-    sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_H264_GUID, NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE,
-        NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO,
-    },
-    Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, Session,
-};
-#[cfg(feature = "nvenc")]
-use xoq::camera::CameraOptions as NvencCameraOptions;
+use xoq::nvenc_av1::NvencAv1Encoder;
 
 // VideoToolbox imports (macOS)
 #[cfg(feature = "vtenc")]
 use xoq::vtenc::VtEncoder;
 
 const CAMERA_JPEG_ALPN: &[u8] = b"xoq/camera-jpeg/0";
-#[cfg(any(feature = "nvenc", feature = "vtenc"))]
+#[cfg(feature = "nvenc")]
+const CAMERA_AV1_ALPN: &[u8] = b"xoq/camera-av1/0";
+#[cfg(feature = "vtenc")]
 const CAMERA_H264_ALPN: &[u8] = b"xoq/camera-h264/0";
 
 /// Get unique USB path for a video device (Linux only).
@@ -283,7 +275,7 @@ fn print_cameras() {
 fn encoder_name() -> &'static str {
     #[cfg(feature = "nvenc")]
     {
-        return "H.264 (NVENC)";
+        return "AV1 (NVENC)";
     }
     #[cfg(feature = "vtenc")]
     {
@@ -300,11 +292,11 @@ fn print_usage() {
     println!("  camera_server 0                       # Single camera (JPEG)");
 
     #[cfg(feature = "nvenc")]
-    println!("  camera_server 0 --h264                # NVENC H.264 encoding");
+    println!("  camera_server 0 --h264                # NVENC AV1 encoding");
     #[cfg(feature = "vtenc")]
     println!("  camera_server 0 --h264                # VideoToolbox H.264 encoding");
     #[cfg(not(any(feature = "nvenc", feature = "vtenc")))]
-    println!("  camera_server 0 --h264                # H.264 encoding (requires nvenc or vtenc feature)");
+    println!("  camera_server 0 --h264                # H.264/AV1 encoding (requires nvenc or vtenc feature)");
 
     println!("  camera_server 0 2 4                   # Multiple cameras");
     println!("  camera_server 0 --key-dir /etc/xoq    # Custom key directory");
@@ -326,231 +318,7 @@ fn print_usage() {
     print_cameras();
 }
 
-// ============================================================================
-// NVENC encoder (Linux)
-// ============================================================================
-
-#[cfg(feature = "nvenc")]
-struct NvencEncoder {
-    input_buffer: std::mem::ManuallyDrop<Buffer<'static>>,
-    output_bitstream: std::mem::ManuallyDrop<Bitstream<'static>>,
-    session: *mut Session,
-    width: u32,
-    height: u32,
-    nv12_buffer: Vec<u8>,
-    frame_count: u64,
-    fps: u32,
-}
-
-#[cfg(feature = "nvenc")]
-unsafe impl Send for NvencEncoder {}
-
-#[cfg(feature = "nvenc")]
-impl Drop for NvencEncoder {
-    fn drop(&mut self) {
-        unsafe {
-            std::mem::ManuallyDrop::drop(&mut self.input_buffer);
-            std::mem::ManuallyDrop::drop(&mut self.output_bitstream);
-        }
-        if !self.session.is_null() {
-            let session = unsafe { Box::from_raw(self.session) };
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(session)));
-        }
-    }
-}
-
-#[cfg(feature = "nvenc")]
-impl NvencEncoder {
-    fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
-        let cuda_ctx = CudaContext::new(0)
-            .map_err(|e| anyhow::anyhow!("Failed to create CUDA context: {}", e))?;
-
-        let encoder = Encoder::initialize_with_cuda(cuda_ctx)
-            .map_err(|e| anyhow::anyhow!("Failed to initialize NVENC: {:?}", e))?;
-
-        let mut preset_config = encoder
-            .get_preset_config(
-                NV_ENC_CODEC_H264_GUID,
-                NV_ENC_PRESET_P4_GUID,
-                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to get preset config: {:?}", e))?;
-
-        let config = &mut preset_config.presetCfg;
-        config.gopLength = fps;
-        config.frameIntervalP = 1;
-        config.rcParams.averageBitRate = bitrate;
-        config.rcParams.maxBitRate = bitrate;
-        config.rcParams.vbvBufferSize = bitrate / fps;
-
-        // H.264-specific: ensure IDR frames with SPS/PPS so decoders can initialize.
-        // Ultra-low-latency preset enables intra refresh (gradual refresh without IDR),
-        // which must be disabled for cross-platform decoding compatibility.
-        unsafe {
-            config
-                .encodeCodecConfig
-                .h264Config
-                .set_enableIntraRefresh(0);
-            config.encodeCodecConfig.h264Config.idrPeriod = fps;
-            config.encodeCodecConfig.h264Config.set_repeatSPSPPS(1);
-        }
-
-        let mut init_params = EncoderInitParams::new(NV_ENC_CODEC_H264_GUID, width, height);
-        init_params
-            .preset_guid(NV_ENC_PRESET_P4_GUID)
-            .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
-            .framerate(fps, 1)
-            .encode_config(config);
-
-        let buffer_format = NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12;
-
-        let session = encoder
-            .start_session(buffer_format, init_params)
-            .map_err(|e| anyhow::anyhow!("Failed to start session: {:?}", e))?;
-
-        let session_ptr = Box::into_raw(Box::new(session));
-        let session_ref: &'static Session = unsafe { &*session_ptr };
-
-        let input_buffer = session_ref
-            .create_input_buffer()
-            .map_err(|e| anyhow::anyhow!("Failed to create input buffer: {:?}", e))?;
-
-        let output_bitstream = session_ref
-            .create_output_bitstream()
-            .map_err(|e| anyhow::anyhow!("Failed to create output bitstream: {:?}", e))?;
-
-        let nv12_size = (width * height * 3 / 2) as usize;
-
-        Ok(NvencEncoder {
-            session: session_ptr,
-            input_buffer: std::mem::ManuallyDrop::new(input_buffer),
-            output_bitstream: std::mem::ManuallyDrop::new(output_bitstream),
-            width,
-            height,
-            nv12_buffer: vec![0u8; nv12_size],
-            frame_count: 0,
-            fps,
-        })
-    }
-
-    fn encode_yuyv(&mut self, yuyv: &[u8], timestamp_us: u64) -> Result<Vec<u8>> {
-        self.yuyv_to_nv12(yuyv);
-        self.encode_nv12(timestamp_us)
-    }
-
-    fn encode_rgb(&mut self, rgb: &[u8], timestamp_us: u64) -> Result<Vec<u8>> {
-        self.rgb_to_nv12(rgb);
-        self.encode_nv12(timestamp_us)
-    }
-
-    fn encode_grey(&mut self, grey: &[u8], timestamp_us: u64) -> Result<Vec<u8>> {
-        self.grey_to_nv12(grey);
-        self.encode_nv12(timestamp_us)
-    }
-
-    fn encode_nv12(&mut self, timestamp_us: u64) -> Result<Vec<u8>> {
-        {
-            let mut lock = self
-                .input_buffer
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Failed to lock input: {:?}", e))?;
-            unsafe { lock.write_nv12(&self.nv12_buffer, self.width, self.height) };
-        }
-
-        let is_idr = self.frame_count % self.fps as u64 == 0;
-        let picture_type = if is_idr {
-            NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR
-        } else {
-            NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_P
-        };
-        let encode_pic_flags = if is_idr {
-            NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_OUTPUT_SPSPPS as u32
-        } else {
-            0
-        };
-        self.frame_count += 1;
-
-        let session: &Session = unsafe { &*self.session };
-        session
-            .encode_picture(
-                &mut *self.input_buffer,
-                &mut *self.output_bitstream,
-                EncodePictureParams {
-                    input_timestamp: timestamp_us,
-                    picture_type,
-                    encode_pic_flags,
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to encode: {:?}", e))?;
-
-        let lock = self
-            .output_bitstream
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock output: {:?}", e))?;
-
-        Ok(lock.data().to_vec())
-    }
-
-    fn yuyv_to_nv12(&mut self, yuyv: &[u8]) {
-        let width = self.width as usize;
-        let height = self.height as usize;
-        let y_size = width * height;
-
-        for y in 0..height {
-            for x in (0..width).step_by(2) {
-                let yuyv_idx = (y * width + x) * 2;
-                let y0 = yuyv.get(yuyv_idx).copied().unwrap_or(0);
-                let y1 = yuyv.get(yuyv_idx + 2).copied().unwrap_or(0);
-
-                self.nv12_buffer[y * width + x] = y0;
-                self.nv12_buffer[y * width + x + 1] = y1;
-
-                if y % 2 == 0 {
-                    let u = yuyv.get(yuyv_idx + 1).copied().unwrap_or(128);
-                    let v = yuyv.get(yuyv_idx + 3).copied().unwrap_or(128);
-                    let uv_idx = y_size + (y / 2) * width + x;
-                    self.nv12_buffer[uv_idx] = u;
-                    self.nv12_buffer[uv_idx + 1] = v;
-                }
-            }
-        }
-    }
-
-    fn rgb_to_nv12(&mut self, rgb: &[u8]) {
-        let width = self.width as usize;
-        let height = self.height as usize;
-        let y_size = width * height;
-
-        for y in 0..height {
-            for x in 0..width {
-                let rgb_idx = (y * width + x) * 3;
-                let r = rgb.get(rgb_idx).copied().unwrap_or(0) as f32;
-                let g = rgb.get(rgb_idx + 1).copied().unwrap_or(0) as f32;
-                let b = rgb.get(rgb_idx + 2).copied().unwrap_or(0) as f32;
-
-                let y_val = (0.299 * r + 0.587 * g + 0.114 * b).clamp(0.0, 255.0) as u8;
-                self.nv12_buffer[y * width + x] = y_val;
-
-                if y % 2 == 0 && x % 2 == 0 {
-                    let u = ((-0.169 * r - 0.331 * g + 0.500 * b) + 128.0).clamp(0.0, 255.0) as u8;
-                    let v = ((0.500 * r - 0.419 * g - 0.081 * b) + 128.0).clamp(0.0, 255.0) as u8;
-                    let uv_idx = y_size + (y / 2) * width + x;
-                    self.nv12_buffer[uv_idx] = u;
-                    self.nv12_buffer[uv_idx + 1] = v;
-                }
-            }
-        }
-    }
-
-    fn grey_to_nv12(&mut self, grey: &[u8]) {
-        let y_size = (self.width as usize) * (self.height as usize);
-        // Y plane: copy directly
-        self.nv12_buffer[..y_size].copy_from_slice(&grey[..y_size]);
-        // UV plane: neutral chroma (128 = grey)
-        self.nv12_buffer[y_size..].fill(128);
-    }
-}
+// NVENC AV1 encoder is now in xoq::nvenc_av1::NvencAv1Encoder
 
 // ============================================================================
 // Camera server functions
@@ -786,12 +554,12 @@ async fn run_camera_server_moq_h264_vtenc(config: &CameraConfig, moq_path: &str)
 }
 
 // ============================================================================
-// MoQ H.264 CMAF server (Linux NVENC)
+// MoQ AV1 CMAF server (Linux NVENC)
 // ============================================================================
 
 #[cfg(all(feature = "nvenc", feature = "camera"))]
 async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str) -> Result<()> {
-    use xoq::cmaf::{parse_annex_b, CmafConfig, CmafMuxer};
+    use xoq::cmaf::{parse_av1_frame, Av1CmafMuxer, CmafConfig};
 
     let camera = Camera::open_with_options(
         config.index,
@@ -806,17 +574,23 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
     let mut use_raw = camera.is_yuyv() || camera.is_grey();
 
     tracing::info!(
-        "[cam{}] Opened: {}x{} ({}) - MoQ H.264/CMAF NVENC mode",
+        "[cam{}] Opened: {}x{} ({}) - MoQ AV1/CMAF NVENC mode",
         config.index,
         actual_width,
         actual_height,
         camera.format_name()
     );
 
-    let mut encoder = NvencEncoder::new(actual_width, actual_height, config.fps, config.bitrate)?;
-    tracing::info!("[cam{}] NVENC encoder initialized", config.index);
+    let mut encoder = NvencAv1Encoder::new(
+        actual_width,
+        actual_height,
+        config.fps,
+        config.bitrate,
+        false,
+    )?;
+    tracing::info!("[cam{}] NVENC AV1 encoder initialized", config.index);
 
-    let mut muxer = CmafMuxer::new(CmafConfig {
+    let mut muxer = Av1CmafMuxer::new(CmafConfig {
         fragment_duration_ms: 33, // 1 frame @ 30fps for lowest latency
         timescale: 90000,
     });
@@ -830,7 +604,7 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
     let mut publisher = builder.connect_publisher().await?;
 
     tracing::info!(
-        "[cam{}] MoQ path: {} (H.264 CMAF NVENC, relay: {})",
+        "[cam{}] MoQ path: {} (AV1 CMAF NVENC, relay: {})",
         config.index,
         moq_path,
         config.relay
@@ -842,7 +616,7 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
     let cam_idx = config.index;
 
     loop {
-        let h264_data = {
+        let av1_data = {
             let mut cam = camera.lock().await;
 
             if use_raw {
@@ -866,16 +640,16 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
             }
         };
 
-        // Parse Annex B output into structured NAL units
-        let parsed = parse_annex_b(&h264_data);
+        // Parse AV1 output into structured frame info
+        let parsed = parse_av1_frame(&av1_data);
 
-        // On first keyframe with SPS/PPS: create and send init segment
+        // On first keyframe with sequence header: create and send init segment
         if init_segment.is_none() {
-            if let (Some(ref sps), Some(ref pps)) = (&parsed.sps, &parsed.pps) {
-                let init = muxer.create_init_segment(sps, pps, actual_width, actual_height);
+            if let Some(ref seq_hdr) = parsed.sequence_header {
+                let init = muxer.create_init_segment(seq_hdr, actual_width, actual_height);
                 track.write(init.clone());
                 init_segment = Some(init);
-                tracing::info!("[cam{}] Sent CMAF init segment", cam_idx);
+                tracing::info!("[cam{}] Sent AV1 CMAF init segment", cam_idx);
             }
         }
 
@@ -884,8 +658,8 @@ async fn run_camera_server_moq_h264_nvenc(config: &CameraConfig, moq_path: &str)
         let dts = pts;
         let duration = (90000 / config.fps) as u32;
 
-        // Feed NALs to CmafMuxer; when a segment is ready, send it
-        if let Some(segment) = muxer.add_frame(&parsed.nals, pts, dts, duration, parsed.is_keyframe)
+        // Feed AV1 data to muxer; when a segment is ready, send it
+        if let Some(segment) = muxer.add_frame(&parsed.data, pts, dts, duration, parsed.is_keyframe)
         {
             // Prepend init segment on keyframes for late-joiner support
             if parsed.is_keyframe {
@@ -994,7 +768,7 @@ async fn run_camera_server_jpeg(config: &CameraConfig) -> Result<()> {
 }
 
 // ============================================================================
-// H.264 server - NVENC (Linux)
+// AV1 server - NVENC (Linux, P2P via iroh)
 // ============================================================================
 
 #[cfg(feature = "nvenc")]
@@ -1012,21 +786,27 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
     let mut use_raw = camera.is_yuyv() || camera.is_grey();
 
     tracing::info!(
-        "[cam{}] Opened: {}x{} ({}) - H.264/NVENC mode",
+        "[cam{}] Opened: {}x{} ({}) - AV1/NVENC P2P mode",
         config.index,
         actual_width,
         actual_height,
         camera.format_name()
     );
 
-    let encoder = NvencEncoder::new(actual_width, actual_height, config.fps, config.bitrate)?;
-    tracing::info!("[cam{}] NVENC encoder initialized", config.index);
+    let encoder = NvencAv1Encoder::new(
+        actual_width,
+        actual_height,
+        config.fps,
+        config.bitrate,
+        false,
+    )?;
+    tracing::info!("[cam{}] NVENC AV1 encoder initialized", config.index);
 
     let camera = Arc::new(Mutex::new(camera));
     let encoder = Arc::new(Mutex::new(encoder));
 
     let server = IrohServerBuilder::new()
-        .alpn(CAMERA_H264_ALPN)
+        .alpn(CAMERA_AV1_ALPN)
         .identity_path(&config.identity_path)
         .bind()
         .await?;
@@ -1057,11 +837,11 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
         let mut frame_count = 0u64;
         let cam_idx = config.index;
 
-        // Reset encoder frame counter so first frame is IDR with SPS/PPS
+        // Reset encoder frame counter so first frame is IDR with sequence header
         encoder.lock().await.frame_count = 0;
 
         loop {
-            let h264_data = {
+            let av1_data = {
                 let mut cam = camera.lock().await;
                 let mut enc = encoder.lock().await;
 
@@ -1087,13 +867,11 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
             };
 
             if frame_count < 3 {
-                let nal_type = h264_data.get(4).map(|b| b & 0x1F).unwrap_or(0);
                 tracing::info!(
-                    "[cam{}] Frame {}: {} bytes, NAL type {}",
+                    "[cam{}] Frame {}: {} bytes (AV1)",
                     cam_idx,
                     frame_count,
-                    h264_data.len(),
-                    nal_type
+                    av1_data.len(),
                 );
             }
 
@@ -1102,11 +880,11 @@ async fn run_camera_server_h264_nvenc(config: &CameraConfig) -> Result<()> {
             header.extend_from_slice(&actual_width.to_le_bytes());
             header.extend_from_slice(&actual_height.to_le_bytes());
             header.extend_from_slice(&timestamp_us.to_le_bytes());
-            header.extend_from_slice(&(h264_data.len() as u32).to_le_bytes());
+            header.extend_from_slice(&(av1_data.len() as u32).to_le_bytes());
 
             let write_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 send.write_all(&header).await?;
-                send.write_all(&h264_data).await?;
+                send.write_all(&av1_data).await?;
                 Ok::<(), std::io::Error>(())
             })
             .await;

@@ -134,6 +134,7 @@ impl MoqBuilder {
         let track_producer = broadcast.producer.create_track(Track::new(track_name));
         let writer = MoqTrackWriter {
             track: track_producer,
+            group: None,
         };
 
         origin
@@ -188,6 +189,7 @@ impl MoqConnection {
         let track_producer = self.broadcast.create_track(Track::new(name));
         MoqTrackWriter {
             track: track_producer,
+            group: None,
         }
     }
 
@@ -207,6 +209,7 @@ impl MoqConnection {
         let track_consumer = broadcast.subscribe_track(&Track::new(track_name));
         Ok(Some(MoqTrackReader {
             track: track_consumer,
+            group: None,
         }))
     }
 }
@@ -223,6 +226,7 @@ impl MoqPublisher {
         let track_producer = self.broadcast.create_track(Track::new(name));
         MoqTrackWriter {
             track: track_producer,
+            group: None,
         }
     }
 }
@@ -250,6 +254,7 @@ impl MoqSubscriber {
         let track_consumer = broadcast.subscribe_track(&Track::new(track_name));
         Ok(Some(MoqTrackReader {
             track: track_consumer,
+            group: None,
         }))
     }
 }
@@ -269,12 +274,28 @@ async fn wait_for_broadcast(
 /// A track writer for publishing data
 pub struct MoqTrackWriter {
     track: moq_lite::TrackProducer,
+    /// Persistent group for stream-mode writes (reliable, ordered delivery)
+    group: Option<moq_lite::GroupProducer>,
 }
 
 impl MoqTrackWriter {
-    /// Write a frame of data
+    /// Write a frame as an independent group (suitable for state/broadcast).
+    ///
+    /// Each call creates a new group. Slow consumers will skip to the latest
+    /// group, dropping intermediate frames. Good for state where you only
+    /// care about the latest value.
     pub fn write(&mut self, data: impl Into<Bytes>) {
         self.track.write_frame(data.into());
+    }
+
+    /// Write a frame to a persistent group (suitable for commands/streams).
+    ///
+    /// All frames go into a single long-lived group, so the consumer reads
+    /// every frame in order without skipping. Good for commands where every
+    /// frame matters.
+    pub fn write_stream(&mut self, data: impl Into<Bytes>) {
+        let group = self.group.get_or_insert_with(|| self.track.append_group());
+        group.write_frame(data.into());
     }
 
     /// Write string data
@@ -286,18 +307,38 @@ impl MoqTrackWriter {
 /// A track reader for receiving data
 pub struct MoqTrackReader {
     track: moq_lite::TrackConsumer,
+    /// Current group being read (drains all frames before moving to next)
+    group: Option<moq_lite::GroupConsumer>,
 }
 
 impl MoqTrackReader {
-    /// Read the next frame
+    /// Read the next frame.
+    ///
+    /// Reads all frames from the current group before moving to the next.
+    /// This handles both per-group writes (state) and persistent-group
+    /// writes (commands) correctly.
     pub async fn read(&mut self) -> Result<Option<Bytes>> {
-        match self.track.next_group().await {
-            Ok(Some(mut group)) => match group.read_frame().await {
-                Ok(data) => Ok(data),
-                Err(e) => Err(anyhow::anyhow!("Read error: {}", e)),
-            },
-            Ok(None) => Ok(None),
-            Err(e) => Err(anyhow::anyhow!("Group error: {}", e)),
+        loop {
+            // Try to read from current group first
+            if let Some(group) = &mut self.group {
+                match group.read_frame().await {
+                    Ok(Some(data)) => return Ok(Some(data)),
+                    Ok(None) => {
+                        // Group exhausted, move to next
+                        self.group = None;
+                    }
+                    Err(e) => return Err(anyhow::anyhow!("Read error: {}", e)),
+                }
+            }
+
+            // Get next group
+            match self.track.next_group().await {
+                Ok(Some(group)) => {
+                    self.group = Some(group);
+                }
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(anyhow::anyhow!("Group error: {}", e)),
+            }
         }
     }
 

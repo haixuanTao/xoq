@@ -14,6 +14,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      padding-bottom: 48px;
     }
 
     /* Top bar */
@@ -25,6 +26,31 @@
       flex-wrap: wrap;
       border-bottom: 1px solid #333;
       background: #16162a;
+    }
+    .top-bar-main {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .top-bar-config {
+      display: none;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      padding-top: 0.4rem;
+      border-top: 1px solid #333;
+      width: 100%;
+    }
+    .top-bar-config.open { display: flex; }
+    .settings-toggle {
+      background: #2a2a4a;
+      color: #aaa;
+      border: 1px solid #444;
+      font-size: 1.1rem;
+      line-height: 1;
+      padding: 0.25rem 0.5rem;
+      margin-left: auto;
     }
     .top-bar h1 { color: #00d4ff; font-size: 1.1rem; white-space: nowrap; }
     .top-bar label {
@@ -88,15 +114,21 @@
       pointer-events: none;
     }
 
-    /* Right panel */
+    /* Side panel (overlay, shown via tabs) */
     .side-panel {
-      width: 280px;
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      bottom: 48px;
+      width: 100%;
       background: #16162a;
-      border-left: 1px solid #333;
-      display: flex;
       flex-direction: column;
       overflow-y: auto;
+      z-index: 100;
     }
+    .side-panel.tab-visible { display: flex; }
+    .side-panel .panel-section { display: none; }
+    .side-panel .panel-section.tab-visible { display: block; }
     .panel-section {
       padding: 0.75rem;
       border-bottom: 1px solid #2a2a4a;
@@ -135,6 +167,32 @@
       color: #888;
     }
 
+    /* Camera preview (vertical fit — no scroll) */
+    #panelCamera.tab-visible {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    #panelCamera.tab-visible #cameraPreviewRow {
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    #panelCamera.tab-visible #cameraPreviewRow > div {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #panelCamera.tab-visible #cameraPreviewRow canvas {
+      flex: 1;
+      min-height: 0;
+      width: 100% !important;
+      height: auto !important;
+      object-fit: contain;
+    }
+
     /* Stats */
     .stats-grid {
       display: grid;
@@ -150,66 +208,153 @@
     .stat-label { color: #888; font-size: 0.65rem; text-transform: uppercase; }
     .stat-value { font-size: 0.9rem; font-weight: bold; color: #00d4ff; }
 
-    /* Log */
+    /* Log (overlay, shown via tab) */
     .log-panel {
-      height: 120px;
-      border-top: 1px solid #333;
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      bottom: 48px;
+      height: auto;
       background: #0a0a1a;
       overflow-y: auto;
       padding: 0.5rem;
       font-family: 'Monaco', 'Menlo', monospace;
       font-size: 0.7rem;
-      flex-shrink: 0;
+      z-index: 100;
     }
+    .log-panel.tab-visible { display: block; }
     .log-entry { margin: 0.15rem 0; }
     .log-info { color: #888; }
     .log-success { color: #2ed573; }
     .log-error { color: #ff4757; }
     .log-data { color: #00d4ff; }
+
+    /* Tab bar (always visible at bottom) */
+    .tab-bar {
+      display: flex;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 48px;
+      background: #16162a;
+      border-top: 1px solid #333;
+      z-index: 200;
+    }
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      color: #888;
+      border: none;
+      border-radius: 0;
+      font-size: 0.8rem;
+      padding: 0;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s;
+      border-top: 2px solid transparent;
+    }
+    .tab-btn:hover { color: #ccc; }
+    .tab-btn.active {
+      color: #00d4ff;
+      border-top-color: #00d4ff;
+    }
+
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 56px;
+      left: 0.5rem;
+      z-index: 150;
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 4px;
+      pointer-events: none;
+      max-height: 40vh;
+      overflow: hidden;
+    }
+    .toast {
+      background: rgba(10, 10, 26, 0.85);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border-left: 3px solid #888;
+      padding: 0.3rem 0.6rem;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 0.7rem;
+      color: #ccc;
+      border-radius: 4px;
+      max-width: min(420px, 80vw);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      animation: toastIn 0.25s ease-out, toastOut 0.4s ease-in forwards;
+      animation-delay: 0s, var(--toast-duration, 4s);
+    }
+    .toast-success { border-left-color: #2ed573; color: #2ed573; }
+    .toast-error   { border-left-color: #ff4757; color: #ff4757; }
+    .toast-data    { border-left-color: #00d4ff; color: #00d4ff; }
+    .toast-info    { border-left-color: #888; }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+
+    /* ─── Narrow screens ──────────────────────────────── */
+    @media (max-width: 768px) {
+      .top-bar { padding: 0.4rem 0.6rem; gap: 0.4rem; }
+      .top-bar-config { flex-direction: column; }
+      .top-bar-config label { width: 100%; }
+      .top-bar-config input[type="text"] { width: 100% !important; }
+    }
   </style>
 </head>
 <body>
   <div class="top-bar">
-    <h1>OpenArm 3D</h1>
-    <label>
-      Relay:
-      <input type="text" id="relayUrl" />
-    </label>
-    <label>
-      Left:
-      <input type="text" id="leftPath" style="width:200px;" />
-    </label>
-    <label>
-      Right:
-      <input type="text" id="rightPath" style="width:200px;" />
-    </label>
-    <label>
-      Depth:
-      <input type="text" id="depthPath" style="width:180px;" />
-    </label>
-    <label>
-      Cert hash:
-      <input type="text" id="certHash" placeholder="sha256 hex (optional)" style="width:140px;" />
-    </label>
-    <label>
-      Hz:
-      <input type="number" id="queryRate" value="100" min="10" max="1000" step="10" style="width:60px; padding:0.35rem 0.3rem; border:1px solid #444; border-radius:4px; background:#2a2a4a; color:#fff; font-size:0.85rem;" />
-    </label>
-    <button id="startBtn">Connect</button>
-    <button id="stopBtn" disabled>Disconnect</button>
-    <button id="queryBtn" disabled>Query Motors</button>
-    <span id="statusText" style="color:#888; font-size:0.8rem;">Idle</span>
-    <span style="border-left:1px solid #444; height:1.2rem;"></span>
-    <button id="viewToggle" style="background:#2a2a4a; color:#aaa; border:1px solid #444;">Camera</button>
-    <label style="font-size:0.75rem;">Pt size: <input type="range" id="ptSize" min="0.5" max="8" step="0.5" value="2" style="width:60px; vertical-align:middle;" /></label>
-    <span style="font-size:0.7rem; color:#666;">depth: 1mm</span>
-    <span style="border-left:1px solid #444; height:1.2rem;"></span>
-    <label style="font-size:0.75rem;">Cam X:<input type="number" id="camX" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-    <label style="font-size:0.75rem;">Y:<input type="number" id="camY" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-    <label style="font-size:0.75rem;">Z:<input type="number" id="camZ" value="0" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-    <label style="font-size:0.75rem;">R:<input type="number" id="camRoll" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-    <label style="font-size:0.75rem;">P:<input type="number" id="camPitch" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-    <label style="font-size:0.75rem;">Yw:<input type="number" id="camYaw" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    <div class="top-bar-main">
+      <h1>OpenArm 3D</h1>
+      <button id="startBtn">Connect</button>
+      <button id="stopBtn" disabled>Disconnect</button>
+      <button id="queryBtn" disabled>Query Motors</button>
+      <span id="statusText" style="color:#888; font-size:0.8rem;">Idle</span>
+      <button id="settingsToggle" class="settings-toggle" aria-label="Settings">&#9881;</button>
+    </div>
+    <div class="top-bar-config" id="topBarConfig">
+      <label>
+        Relay:
+        <input type="text" id="relayUrl" />
+      </label>
+      <label>
+        Left:
+        <input type="text" id="leftPath" style="width:200px;" />
+      </label>
+      <label>
+        Right:
+        <input type="text" id="rightPath" style="width:200px;" />
+      </label>
+      <label>
+        Depth:
+        <input type="text" id="depthPath" style="width:180px;" />
+      </label>
+      <label>
+        Cert hash:
+        <input type="text" id="certHash" placeholder="sha256 hex (optional)" style="width:140px;" />
+      </label>
+      <label>
+        Hz:
+        <input type="number" id="queryRate" value="10" min="10" max="1000" step="10" style="width:60px; padding:0.35rem 0.3rem; border:1px solid #444; border-radius:4px; background:#2a2a4a; color:#fff; font-size:0.85rem;" />
+      </label>
+      <label style="font-size:0.75rem;">Pt size: <input type="range" id="ptSize" min="0.5" max="8" step="0.5" value="2" style="width:60px; vertical-align:middle;" /></label>
+      <span style="font-size:0.7rem; color:#666;">depth: 1mm</span>
+      <span style="border-left:1px solid #444; height:1.2rem;"></span>
+      <label style="font-size:0.75rem;">Cam X:<input type="number" id="camX" value="-0.26" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Y:<input type="number" id="camY" value="0.79" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Z:<input type="number" id="camZ" value="0.22" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">R:<input type="number" id="camRoll" value="90" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">P:<input type="number" id="camPitch" value="-225" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Yw:<input type="number" id="camYaw" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+    </div>
   </div>
 
   <div class="main">
@@ -219,21 +364,8 @@
         <span>Drag to orbit / Scroll to zoom / Right-drag to pan</span>
       </div>
     </div>
-    <div id="viewCamera" style="display:none; flex:1; min-width:0; background:#000; position:relative;">
-      <div style="display:flex; height:100%; gap:2px; padding:2px;">
-        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
-          <div style="font-size:0.65rem; color:#666; padding:2px 4px;">Color</div>
-          <canvas id="colorFullCanvas" style="flex:1; width:100%; object-fit:contain; background:#111; border-radius:3px;"></canvas>
-        </div>
-        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
-          <div style="font-size:0.65rem; color:#666; padding:2px 4px;">Depth</div>
-          <canvas id="depthFullCanvas" style="flex:1; width:100%; object-fit:contain; background:#111; border-radius:3px;"></canvas>
-        </div>
-      </div>
-    </div>
-
     <div class="side-panel">
-      <div class="panel-section">
+      <div class="panel-section" id="panelLeft">
         <h3>Left Arm</h3>
         <div class="joint-row" style="font-size:0.65rem; color:#666;">
           <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Vel</span><span style="text-align:right;">Tau</span>
@@ -241,7 +373,7 @@
         <div id="leftJointRows"></div>
       </div>
 
-      <div class="panel-section">
+      <div class="panel-section" id="panelRight">
         <h3>Right Arm</h3>
         <div class="joint-row" style="font-size:0.65rem; color:#666;">
           <span>Joint</span><span style="text-align:right;">Angle</span><span style="text-align:right;">Vel</span><span style="text-align:right;">Tau</span>
@@ -249,9 +381,9 @@
         <div id="rightJointRows"></div>
       </div>
 
-      <div class="panel-section">
+      <div class="panel-section" id="panelCamera">
         <h3>Camera</h3>
-        <div style="display:flex; gap:4px;">
+        <div id="cameraPreviewRow" style="display:flex; gap:4px;">
           <div style="flex:1; text-align:center;">
             <div style="font-size:0.65rem; color:#666; margin-bottom:2px;">Color</div>
             <canvas id="colorPreview" width="128" height="96" style="width:100%; border-radius:3px; background:#000;"></canvas>
@@ -264,7 +396,7 @@
         <div style="font-size:0.7rem; color:#888; margin-top:4px;" id="pcStats">No depth stream</div>
       </div>
 
-      <div class="panel-section">
+      <div class="panel-section" id="panelStats">
         <h3>Stats</h3>
         <div class="stats-grid">
           <div class="stat">
@@ -288,7 +420,16 @@
     </div>
   </div>
 
+  <div class="tab-bar" id="tabBar">
+    <button class="tab-btn active" data-tab="3d">3D</button>
+    <button class="tab-btn" data-tab="arms">Arms</button>
+    <button class="tab-btn" data-tab="camera">Cam</button>
+    <button class="tab-btn" data-tab="stats">Stats</button>
+    <button class="tab-btn" data-tab="log">Log</button>
+  </div>
+
   <div class="log-panel" id="log"></div>
+  <div class="toast-container" id="toasts"></div>
 
   <div style="position:fixed; top:-9999px;">
     <video id="colorVideo" autoplay muted playsinline></video>
@@ -305,7 +446,8 @@
     // ─── Config (query params > localStorage > defaults) ──
     const params = new URLSearchParams(location.search);
     const LS_PREFIX = "openarm.";
-    const ls = (k, fallback) => params.get(k) || localStorage.getItem(LS_PREFIX + k) || fallback;
+    // If a query param is explicitly present (even if empty), use it; otherwise fall back to localStorage / default
+    const ls = (k, fallback) => params.has(k) ? (params.get(k) || "") : (localStorage.getItem(LS_PREFIX + k) || fallback);
 
     const relayInput    = document.getElementById("relayUrl");
     const leftPathInput = document.getElementById("leftPath");
@@ -314,9 +456,9 @@
     const certHashInput = document.getElementById("certHash");
 
     relayInput.value     = ls("relay", "https://cdn.1ms.ai");
-    leftPathInput.value  = params.get("left") || params.get("path") || localStorage.getItem(LS_PREFIX + "left") || "anon/xoq-can-can0/state";
+    leftPathInput.value  = params.has("left") ? (params.get("left") || "") : (params.get("path") || localStorage.getItem(LS_PREFIX + "left") || "anon/xoq-can-can0/state");
     rightPathInput.value = ls("right", "anon/xoq-can-can1/state");
-    depthPathInput.value = ls("depth", "");
+    depthPathInput.value = ls("depth", "anon/realsense");
     certHashInput.value  = ls("certHash", "");
 
     // Persist all config inputs on change
@@ -383,6 +525,10 @@
     let queryArm = 0; // alternates between arms
 
     // ─── Logging ──────────────────────────────────────────
+    const toastsEl = document.getElementById("toasts");
+    const TOAST_DURATION = 4000; // ms before fade-out starts
+    const TOAST_MAX = 5;
+
     function log(msg, type = "info") {
       const entry = document.createElement("div");
       entry.className = `log-entry log-${type}`;
@@ -390,6 +536,17 @@
       logEl.appendChild(entry);
       if (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
       logEl.scrollTop = logEl.scrollHeight;
+
+      // Toast notification
+      const toast = document.createElement("div");
+      toast.className = `toast toast-${type}`;
+      toast.style.setProperty('--toast-duration', `${TOAST_DURATION}ms`);
+      toast.textContent = msg;
+      toastsEl.prepend(toast);
+      // Remove old toasts beyond max
+      while (toastsEl.children.length > TOAST_MAX) toastsEl.lastChild.remove();
+      // Remove after animation completes
+      setTimeout(() => toast.remove(), TOAST_DURATION + 400);
     }
 
     function formatBytes(b) {
@@ -820,9 +977,11 @@
             this.video.play().catch(() => {});
             this.seekIv = setInterval(() => {
               if (this.video.buffered.length > 0) {
-                const end = this.video.buffered.end(this.video.buffered.length - 1);
-                if (end - this.video.currentTime > 0.5) this.video.currentTime = end - 0.05;
                 const start = this.video.buffered.start(0);
+                const end = this.video.buffered.end(this.video.buffered.length - 1);
+                if (this.video.currentTime < start || end - this.video.currentTime > 0.5) {
+                  this.video.currentTime = Math.max(start, end - 0.05);
+                }
                 if (end - start > 10 && !this.sb.updating) try { this.sb.remove(start, end - 5); } catch {}
               }
             }, 500);
@@ -880,13 +1039,14 @@
         }
       }
 
-      readTrack(videoTrack, d => colorPlayer.onData(d), 'video').catch(e => {
+      const videoPromise = readTrack(videoTrack, d => colorPlayer.onData(d), 'video').catch(e => {
         if (rsRunning) log(`[depth] video error: ${e.message}`, 'error');
       });
-      readTrack(depthTrack, d => depthDecoder.onData(d), 'depth').catch(e => {
+      const depthPromise = readTrack(depthTrack, d => depthDecoder.onData(d), 'depth').catch(e => {
         if (rsRunning) log(`[depth] depth error: ${e.message}`, 'error');
       });
       log('[depth] Receiving frames...', 'success');
+      return Promise.all([videoPromise, depthPromise]);
     }
 
     function disconnectRealSense() {
@@ -1310,70 +1470,12 @@
     // Initial size set after first frame
     requestAnimationFrame(onResize);
 
-    // ─── View toggle (3D / Camera) ────────────────────────
-    let viewMode = '3d'; // '3d' or 'camera'
     const view3dEl = document.getElementById('view3d');
-    const viewCamEl = document.getElementById('viewCamera');
-    const viewToggleBtn = document.getElementById('viewToggle');
-    const colorFullCanvas = document.getElementById('colorFullCanvas');
-    const depthFullCanvas = document.getElementById('depthFullCanvas');
-    const colorFullCtx = colorFullCanvas.getContext('2d');
-    const depthFullCtx = depthFullCanvas.getContext('2d');
-
-    viewToggleBtn.addEventListener('click', () => {
-      if (viewMode === '3d') {
-        viewMode = 'camera';
-        view3dEl.style.display = 'none';
-        viewCamEl.style.display = 'block';
-        viewToggleBtn.textContent = '3D';
-        viewToggleBtn.style.background = '#00d4ff';
-        viewToggleBtn.style.color = '#000';
-      } else {
-        viewMode = '3d';
-        view3dEl.style.display = '';
-        viewCamEl.style.display = 'none';
-        viewToggleBtn.textContent = 'Camera';
-        viewToggleBtn.style.background = '#2a2a4a';
-        viewToggleBtn.style.color = '#aaa';
-        onResize();
-      }
-    });
-
-    function updateCameraView() {
-      if (viewMode !== 'camera') return;
-      const colorVideo = document.getElementById('colorVideo');
-      if (colorVideo.videoWidth) {
-        if (colorFullCanvas.width !== colorVideo.videoWidth) {
-          colorFullCanvas.width = colorVideo.videoWidth;
-          colorFullCanvas.height = colorVideo.videoHeight;
-        }
-        colorFullCtx.drawImage(colorVideo, 0, 0);
-      }
-      if (depthDecoder && depthDecoder.latestY) {
-        const dY = depthDecoder.latestY;
-        const dW = depthDecoder.width, dH = depthDecoder.height;
-        if (depthFullCanvas.width !== dW) {
-          depthFullCanvas.width = dW;
-          depthFullCanvas.height = dH;
-        }
-        const img = depthFullCtx.createImageData(dW, dH);
-        const px = img.data;
-        for (let i = 0; i < dW * dH; i++) {
-          const v8 = depthDecoder.is10bit ? (dY[i] >> 2) : dY[i];
-          px[i*4] = v8; px[i*4+1] = v8; px[i*4+2] = v8; px[i*4+3] = 255;
-        }
-        depthFullCtx.putImageData(img, 0, 0);
-      }
-    }
 
     // ─── Render loop ──────────────────────────────────────
     function animate() {
       requestAnimationFrame(animate);
       updateArmPose();
-      if (viewMode === 'camera') {
-        updateCameraView();
-        return;
-      }
       if (!renderer) return;
       controls.update();
       updatePointCloud();
@@ -1456,28 +1558,21 @@
         setStatus("Connecting...");
         log(`WebTransport: ${typeof WebTransport !== 'undefined' ? 'supported' : 'NOT supported'}`, "data");
 
-        // Fetch cert hash for diagnostics
         const relay = relayInput.value;
         const certHash = certHashInput.value.trim();
-        if (!certHash) {
-          try {
-            const resp = await fetch(`${relay}/certificate.sha256`);
-            if (resp.ok) log(`Relay cert: ${(await resp.text()).trim().slice(0, 32)}...`, "data");
-          } catch (e) {}
-        }
 
         // Warn if both arms subscribe to the same path (likely localStorage stale value)
         if (leftPath && rightPath && leftPath === rightPath) {
           log(`WARNING: Left and Right arms use the same path "${leftPath}" — gripper cross-talk expected!`, "error");
         }
 
-        // Subscribe to both arms concurrently
+        // Subscribe to both arms concurrently (isolated so CAN errors don't kill depth)
         const subs = [];
-        if (leftPath) subs.push(subscribeArm("left", leftPath, leftJointState));
-        if (rightPath) subs.push(subscribeArm("right", rightPath, rightJointState));
+        if (leftPath) subs.push(subscribeArm("left", leftPath, leftJointState).catch(e => log(`[left] ${e.message}`, "error")));
+        if (rightPath) subs.push(subscribeArm("right", rightPath, rightJointState).catch(e => log(`[right] ${e.message}`, "error")));
 
-        // Connect RealSense point cloud if configured
-        try { await connectRealSense(); } catch (e) { log(`[depth] ${e.message}`, "error"); }
+        // Connect RealSense point cloud if configured (add to subs so finally waits)
+        if (depthPath) subs.push(connectRealSense().catch(e => log(`[depth] ${e.message}`, "error")));
 
         queryBtn.disabled = false;
         setStatus("Streaming");
@@ -1550,11 +1645,51 @@
 
     log("Ready. Click Connect to start.", "info");
 
-    // Auto-connect if query params provided
-    if (params.has("left") || params.has("right") || params.has("path") || params.has("depth")) {
-      log("Auto-connecting from query params...", "info");
-      startBtn.click();
-    }
+    // Auto-connect on page load (delay to let heavy 3D init complete)
+    log("Auto-connecting in 3s...", "info");
+    setTimeout(() => { log("Connecting now..."); startBtn.click(); }, 3000);
+
+    // ─── Settings toggle + tab switching ────────────────
+    document.getElementById('settingsToggle').addEventListener('click', () => {
+      document.getElementById('topBarConfig').classList.toggle('open');
+    });
+
+    const tabBar = document.getElementById('tabBar');
+    const sidePanel = document.querySelector('.side-panel');
+    const logPanel = document.getElementById('log');
+    const panelMap = {
+      arms: [document.getElementById('panelLeft'), document.getElementById('panelRight')],
+      camera: [document.getElementById('panelCamera')],
+      stats: [document.getElementById('panelStats')],
+    };
+    const allPanels = Object.values(panelMap).flat();
+
+    tabBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      const tab = btn.dataset.tab;
+
+      // Update active button
+      tabBar.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Hide everything first
+      sidePanel.classList.remove('tab-visible');
+      allPanels.forEach(p => p.classList.remove('tab-visible'));
+      logPanel.classList.remove('tab-visible');
+      view3dEl.style.display = '';
+
+      if (tab === '3d') {
+        requestAnimationFrame(onResize);
+      } else if (tab === 'log') {
+        logPanel.classList.add('tab-visible');
+        view3dEl.style.display = 'none';
+      } else if (tab in panelMap) {
+        sidePanel.classList.add('tab-visible');
+        panelMap[tab].forEach(p => p.classList.add('tab-visible'));
+        view3dEl.style.display = 'none';
+      }
+    });
   </script>
 </body>
 </html>

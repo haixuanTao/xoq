@@ -463,6 +463,40 @@ impl BufferLock<'_, '_> {
                 .copy_to_nonoverlapping(dst.add(dst_uv + y * p), w);
         }
     }
+
+    /// Write P010 data to the buffer, handling pitch (stride) correctly.
+    ///
+    /// P010 is the same NV12 layout but with `u16` samples (10-bit values in the
+    /// top bits, MSB-aligned). Each row is `width * 2` bytes for the Y plane, and
+    /// `width * 2` bytes for the UV plane at half height.
+    ///
+    /// `data` must be tightly packed P010: `width * height * 2` bytes of Y plane
+    /// followed by `width * (height / 2) * 2` bytes of interleaved UV plane.
+    ///
+    /// # Safety
+    ///
+    /// `width` and `height` must match the encoder's configured dimensions.
+    pub unsafe fn write_p010(&mut self, data: &[u8], width: u32, height: u32) {
+        let w = width as usize * 2; // 2 bytes per pixel
+        let h = height as usize;
+        let p = self.pitch as usize;
+        let dst = self.data_ptr.cast::<u8>();
+
+        // Copy Y plane row by row
+        for y in 0..h {
+            data.as_ptr()
+                .add(y * w)
+                .copy_to_nonoverlapping(dst.add(y * p), w);
+        }
+        // Copy UV plane row by row (half height, same width in bytes)
+        let src_uv = w * h;
+        let dst_uv = p * h;
+        for y in 0..(h / 2) {
+            data.as_ptr()
+                .add(src_uv + y * w)
+                .copy_to_nonoverlapping(dst.add(dst_uv + y * p), w);
+        }
+    }
 }
 
 impl Drop for BufferLock<'_, '_> {

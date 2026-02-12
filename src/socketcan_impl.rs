@@ -125,8 +125,8 @@ pub enum Transport {
     Moq {
         /// Relay URL
         relay: String,
-        /// Authentication token
-        token: Option<String>,
+        /// Disable TLS verification (for self-signed certs)
+        insecure: bool,
     },
 }
 
@@ -208,18 +208,19 @@ impl CanSocketBuilder {
     pub fn with_moq(mut self, relay: &str) -> Self {
         self.transport = Transport::Moq {
             relay: relay.to_string(),
-            token: None,
+            insecure: false,
         };
         self
     }
 
-    /// Set authentication token (for MoQ).
-    pub fn token(mut self, token: &str) -> Self {
+    /// Disable TLS verification (for self-signed certs on MoQ relay).
+    pub fn insecure(mut self, val: bool) -> Self {
         if let Transport::Moq {
-            token: ref mut t, ..
+            insecure: ref mut i,
+            ..
         } = self.transport
         {
-            *t = Some(token.to_string());
+            *i = val;
         }
         self
     }
@@ -244,10 +245,31 @@ impl CanSocketBuilder {
                     _conn: Box::new(conn),
                 })
             })?,
-            Transport::Moq { relay, token: _ } => runtime.block_on(async {
-                let stream = crate::moq::MoqStream::connect_to(&relay, &self.server_id).await?;
+            Transport::Moq { relay, insecure } => runtime.block_on(async {
+                let mut builder = crate::moq::MoqBuilder::new().relay(&relay);
+                if insecure {
+                    builder = builder.disable_tls_verify();
+                }
+
+                // Client publishes commands on {path}/commands, subscribes to state on {path}/state
+                let cmd_builder = builder
+                    .clone()
+                    .path(&format!("{}/commands", self.server_id));
+                let state_builder = builder.path(&format!("{}/state", self.server_id));
+
+                let (pub_result, sub_result) = tokio::join!(
+                    cmd_builder.connect_publisher_with_track("can"),
+                    Self::connect_and_subscribe_retry(state_builder, "can")
+                );
+
+                let (publisher, cmd_writer) = pub_result?;
+                let (subscriber, state_reader) = sub_result?;
+
                 Ok::<_, anyhow::Error>(ClientInner::Moq {
-                    stream: Arc::new(tokio::sync::Mutex::new(stream)),
+                    cmd_writer: Arc::new(Mutex::new(cmd_writer)),
+                    state_reader: Arc::new(Mutex::new(state_reader)),
+                    _publisher: Box::new(publisher),
+                    _subscriber: Box::new(subscriber),
                 })
             })?,
         };
@@ -272,8 +294,41 @@ enum ClientInner {
         _conn: Box<IrohConnection>,
     },
     Moq {
-        stream: Arc<tokio::sync::Mutex<crate::moq::MoqStream>>,
+        cmd_writer: Arc<Mutex<crate::moq::MoqTrackWriter>>,
+        state_reader: Arc<Mutex<crate::moq::MoqTrackReader>>,
+        _publisher: Box<crate::moq::MoqPublisher>,
+        _subscriber: Box<crate::moq::MoqSubscriber>,
     },
+}
+
+impl CanSocketBuilder {
+    /// Connect subscriber with retry loop — keeps reconnecting until broadcast is found.
+    async fn connect_and_subscribe_retry(
+        builder: crate::moq::MoqBuilder,
+        track_name: &str,
+    ) -> anyhow::Result<(crate::moq::MoqSubscriber, crate::moq::MoqTrackReader)> {
+        let track = track_name.to_string();
+        loop {
+            let mut subscriber = builder.clone().connect_subscriber().await?;
+
+            match tokio::time::timeout(Duration::from_secs(2), subscriber.subscribe_track(&track))
+                .await
+            {
+                Ok(Ok(Some(reader))) => return Ok((subscriber, reader)),
+                Ok(Ok(None)) => {
+                    tracing::debug!("Broadcast ended, reconnecting...");
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!("Subscribe error: {}, reconnecting...", e);
+                }
+                Err(_) => {
+                    tracing::debug!("No broadcast yet, reconnecting...");
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
 }
 
 /// Create a new remote CAN socket builder.
@@ -383,9 +438,9 @@ impl RemoteCanSocket {
                     // task pack the data into a UDP packet before we return
                     tokio::time::sleep(std::time::Duration::from_micros(100)).await;
                 }
-                ClientInner::Moq { stream } => {
-                    let mut s = stream.lock().await;
-                    s.write(data.to_vec());
+                ClientInner::Moq { cmd_writer, .. } => {
+                    let mut w = cmd_writer.lock().await;
+                    w.write_stream(data.to_vec());
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -432,9 +487,9 @@ impl RemoteCanSocket {
                             None => Ok(None),
                         }
                     }
-                    ClientInner::Moq { stream } => {
-                        let mut s = stream.lock().await;
-                        if let Some(data) = s.read().await? {
+                    ClientInner::Moq { state_reader, .. } => {
+                        let mut r = state_reader.lock().await;
+                        if let Some(data) = r.read().await? {
                             Ok(Some(data.to_vec()))
                         } else {
                             Ok(None)
@@ -541,9 +596,9 @@ impl CanBusSocket for RemoteCanSocket {
                     // quinn's flush() is a no-op — yield to let connection task send
                     tokio::time::sleep(std::time::Duration::from_micros(100)).await;
                 }
-                ClientInner::Moq { stream } => {
-                    let mut s = stream.lock().await;
-                    s.write(encoded.to_vec());
+                ClientInner::Moq { cmd_writer, .. } => {
+                    let mut w = cmd_writer.lock().await;
+                    w.write_stream(encoded.to_vec());
                 }
             }
             Ok::<_, anyhow::Error>(())
@@ -572,9 +627,9 @@ impl CanBusSocket for RemoteCanSocket {
                             None => Ok(None),
                         }
                     }
-                    ClientInner::Moq { stream } => {
-                        let mut s = stream.lock().await;
-                        if let Some(data) = s.read().await? {
+                    ClientInner::Moq { state_reader, .. } => {
+                        let mut r = state_reader.lock().await;
+                        if let Some(data) = r.read().await? {
                             Ok(Some(data.to_vec()))
                         } else {
                             Ok(None)

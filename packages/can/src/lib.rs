@@ -191,15 +191,18 @@ impl Bus {
     /// Create a new CAN bus connection.
     ///
     /// Args:
-    ///     channel: The server's endpoint ID (required)
+    ///     channel: The server's endpoint ID or MoQ path (required).
+    ///              64-char hex string → iroh P2P; contains '/' → MoQ relay.
     ///     interface: Interface type (accepted for compatibility, ignored)
     ///     bitrate: CAN bitrate (accepted for compatibility, ignored for remote)
     ///     data_bitrate: CAN FD data bitrate (accepted for compatibility, ignored for remote)
     ///     receive_own_messages: Whether to receive messages sent by this bus (ignored)
     ///     fd: Whether to enable CAN FD support
     ///     timeout: Default receive timeout in seconds (None for blocking)
+    ///     relay: MoQ relay URL (default: https://cdn.moq.dev). Only used for MoQ paths.
+    ///     insecure: Disable TLS verification for self-signed certs (default: False)
     #[new]
-    #[pyo3(signature = (channel=None, interface=None, bitrate=None, data_bitrate=None, receive_own_messages=false, fd=false, timeout=None, **kwargs))]
+    #[pyo3(signature = (channel=None, interface=None, bitrate=None, data_bitrate=None, receive_own_messages=false, fd=false, timeout=None, relay=None, insecure=true, **kwargs))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         channel: Option<&str>,
@@ -209,6 +212,8 @@ impl Bus {
         receive_own_messages: bool,
         fd: bool,
         timeout: Option<f64>,
+        relay: Option<&str>,
+        insecure: bool,
         kwargs: Option<&Bound<'_, pyo3::types::PyDict>>,
     ) -> PyResult<Self> {
         // These parameters are accepted for python-can compatibility but ignored for remote connections
@@ -222,7 +227,35 @@ impl Bus {
 
         let channel = channel.ok_or_else(|| PyValueError::new_err("channel is required"))?;
 
-        let channel_str = channel.to_string();
+        // Full URL like "https://relay:4443/anon/xoq-can-can0" → parse into relay + path
+        let (channel_str, relay_str, is_moq) =
+            if channel.starts_with("https://") || channel.starts_with("http://") {
+                // Split at first path component after host:port
+                // e.g. "https://1.2.3.4:4443/anon/foo" → relay="https://1.2.3.4:4443", path="anon/foo"
+                match channel.find("://").and_then(|scheme_end| {
+                    channel[scheme_end + 3..]
+                        .find('/')
+                        .map(|p| scheme_end + 3 + p)
+                }) {
+                    Some(slash) => (
+                        channel[slash + 1..].to_string(),
+                        relay.unwrap_or(&channel[..slash]).to_string(),
+                        true,
+                    ),
+                    None => {
+                        return Err(PyValueError::new_err(format!(
+                            "MoQ URL must have a path: {}",
+                            channel
+                        )));
+                    }
+                }
+            } else {
+                (
+                    channel.to_string(),
+                    relay.unwrap_or("https://cdn.moq.dev").to_string(),
+                    channel.contains('/'),
+                )
+            };
         // Run open() in a dedicated thread since it creates its own tokio runtime
         let socket = run_in_thread(move || {
             let mut builder = xoq::socketcan::new(&channel_str);
@@ -231,6 +264,9 @@ impl Bus {
             }
             if let Some(t) = timeout {
                 builder = builder.timeout(Duration::from_secs_f64(t));
+            }
+            if is_moq {
+                builder = builder.with_moq(&relay_str).insecure(insecure);
             }
             builder
                 .open()
@@ -248,22 +284,34 @@ impl Bus {
     /// Send a CAN message.
     ///
     /// Args:
-    ///     msg: The Message to send
+    ///     msg: The Message to send (xoq_can.Message or python-can Message)
     ///     timeout: Send timeout in seconds (optional)
     #[pyo3(signature = (msg, timeout=None))]
-    fn send(&self, py: Python<'_>, msg: &Message, timeout: Option<f64>) -> PyResult<()> {
+    fn send(
+        &self,
+        py: Python<'_>,
+        msg: &Bound<'_, pyo3::types::PyAny>,
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
         if !self.is_open.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(PyRuntimeError::new_err("Bus is closed"));
         }
 
         let _ = timeout; // TODO: implement send timeout
 
-        // Extract data from Python object before releasing GIL
-        let is_fd = msg.is_fd;
-        let arb_id = msg.arbitration_id;
-        let data = msg.data.clone();
-        let brs = msg.bitrate_switch;
-        let esi = msg.error_state_indicator;
+        // Extract attributes from any Message-like object (works with both
+        // xoq_can.Message and python-can's can.Message)
+        let is_fd: bool = msg.getattr("is_fd")?.extract()?;
+        let arb_id: u32 = msg.getattr("arbitration_id")?.extract()?;
+        let data: Vec<u8> = msg.getattr("data")?.extract()?;
+        let brs: bool = msg
+            .getattr("bitrate_switch")
+            .and_then(|v| v.extract())
+            .unwrap_or(false);
+        let esi: bool = msg
+            .getattr("error_state_indicator")
+            .and_then(|v| v.extract())
+            .unwrap_or(false);
 
         let socket = self.socket.clone();
         // Release GIL during blocking network I/O

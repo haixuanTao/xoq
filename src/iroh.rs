@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use bytes::Bytes;
-use iroh::endpoint::{AckFrequencyConfig, Connection, TransportConfig, VarInt};
+use iroh::endpoint::{AckFrequencyConfig, Connection, QuicTransportConfig, VarInt};
 use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use iroh_quinn_proto::congestion;
 /// Returns u64::MAX for the window, so poll_transmit is never blocked
 /// by congestion control. Use on trusted LANs where packet loss is
 /// rare and latency matters more than fairness.
+#[derive(Debug)]
 struct NoopController {
     mtu: u16,
 }
@@ -29,6 +30,7 @@ impl congestion::Controller for NoopController {
         _now: std::time::Instant,
         _sent: std::time::Instant,
         _is_persistent_congestion: bool,
+        _in_flight_loss: bool,
         _lost_bytes: u64,
     ) {
         // Ignore loss events — don't reduce the window
@@ -74,26 +76,23 @@ impl congestion::ControllerFactory for NoopControllerFactory {
 /// - initial_rtt: 10ms (vs 333ms default) — realistic for LAN/direct connections
 /// - ACK frequency: immediate ACKs (threshold=0, max_delay=1ms)
 /// - keep_alive: 1s
-fn low_latency_transport_config() -> TransportConfig {
-    let mut config = TransportConfig::default();
-    config.initial_rtt(Duration::from_millis(10));
-    config.keep_alive_interval(Some(Duration::from_secs(1)));
-
+fn low_latency_transport_config() -> QuicTransportConfig {
     // Request peer to ACK immediately (every packet, max 1ms delay)
     let mut ack_freq = AckFrequencyConfig::default();
     ack_freq.ack_eliciting_threshold(VarInt::from_u32(0));
     ack_freq.max_ack_delay(Some(Duration::from_millis(1)));
-    config.ack_frequency_config(Some(ack_freq));
 
-    // Disable congestion control — never block poll_transmit due to cwnd.
-    // Safe on trusted LANs; avoids 100-200ms stalls when a single packet is lost.
-    config.congestion_controller_factory(Arc::new(NoopControllerFactory));
-
-    // Disable GSO (Generic Segmentation Offload) so each QUIC packet is sent as
-    // its own UDP datagram immediately, rather than coalescing up to 10 packets.
-    config.enable_segmentation_offload(false);
-
-    config
+    QuicTransportConfig::builder()
+        .initial_rtt(Duration::from_millis(10))
+        .keep_alive_interval(Duration::from_secs(1))
+        .ack_frequency_config(Some(ack_freq))
+        // Disable congestion control — never block poll_transmit due to cwnd.
+        // Safe on trusted LANs; avoids 100-200ms stalls when a single packet is lost.
+        .congestion_controller_factory(Arc::new(NoopControllerFactory))
+        // Disable GSO (Generic Segmentation Offload) so each QUIC packet is sent as
+        // its own UDP datagram immediately, rather than coalescing up to 10 packets.
+        .enable_segmentation_offload(false)
+        .build()
 }
 
 /// Default ALPN protocol for generic P2P communication.

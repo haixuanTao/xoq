@@ -175,6 +175,98 @@ for msg in bus:
 
 ---
 
+### MoQ (Relay) Mode
+
+The examples above use **Iroh (P2P)** — direct connections between server and client. XoQ also supports **MoQ (Relay)** mode for browser-based access and 1-to-many broadcasting via a relay server.
+
+#### 1. Run the MoQ Relay
+
+You need a self-hosted [moq-relay](https://github.com/kixelated/moq-rs):
+
+```bash
+# Build
+git clone https://github.com/kixelated/moq-rs && cd moq-rs
+cargo build --release -p moq-relay
+
+# Run with self-signed TLS (dev)
+moq-relay --server-bind 0.0.0.0:4443 --tls-generate localhost --auth-public anon
+
+# Run with real TLS certs (prod)
+moq-relay --server-bind 0.0.0.0:4443 \
+  --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem \
+  --web-http-listen 0.0.0.0:4443 --auth-public anon
+```
+
+> **Note:** `cdn.moq.dev` does NOT forward announcements between sessions — cross-session pub/sub requires a self-hosted relay.
+
+#### 2a. Bridge a CAN Bus over MoQ
+
+The CAN MoQ server broadcasts CAN state to all subscribers (1-to-many) and accepts commands from any publisher (many-to-1).
+
+Server (Linux with SocketCAN):
+
+```bash
+# Dedicated MoQ server (recommended)
+cargo run --release --bin moq-can-server --features can -- \
+  can0 --relay https://172.18.133.111:4443 --insecure
+
+# Or use the unified can-server with --moq flag
+cargo run --release --bin can-server --features "iroh,can" -- \
+  can0:fd --moq --relay https://172.18.133.111:4443 --insecure
+```
+
+The default broadcast path is `anon/xoq-can-<interface>/state` (e.g., `anon/xoq-can-can0/state`), and the command path is `anon/xoq-can-<interface>/cmd`.
+
+Browser client — open the web examples:
+
+```bash
+cd js && npm install && npm run examples
+# Open http://localhost:5173/openarm.html    — 3D robot arm visualizer (Damiao motors)
+# Open http://localhost:5173/can_cmd_test.html — CAN command publisher
+```
+
+`openarm.html` subscribes to the CAN state broadcast, parses Damiao motor frames, and renders a 3D robot arm in real-time. It also publishes motor query commands back through the relay.
+
+#### 2b. Bridge a Serial Port over MoQ
+
+The serial MoQ server provides bidirectional pass-through — raw bytes flow between the browser and the serial device via the relay.
+
+Server (Linux/macOS/Windows):
+
+```bash
+cargo run --release --bin moq-serial-server --features serial -- \
+  /dev/ttyACM0 1000000 https://172.18.133.111:4443 anon/xoq-serial
+#  ^port        ^baud   ^relay URL                   ^MoQ path
+```
+
+Browser client:
+
+```bash
+cd js && npm install && npm run examples
+# Open http://localhost:5173/urdf_viewer.html — URDF robot viewer (FeeTech STS3215 servos)
+```
+
+`urdf_viewer.html` loads a URDF robot model (SO101 by default), connects to the serial server via MoQ, sends FeeTech read commands, and updates the 3D joint angles in real-time.
+
+#### MoQ Architecture
+
+```
+Browser (WebTransport)          MoQ Relay              Server (QUIC)
+┌────────────────────┐     ┌──────────────┐     ┌──────────────────┐
+│ Publish  {path}/c2s│────▶│              │────▶│ Subscribe {path}/c2s │
+│                    │     │  moq-relay   │     │                      │
+│ Subscribe{path}/s2c│◀────│              │◀────│ Publish   {path}/s2c │
+└────────────────────┘     └──────────────┘     └──────────────────────┘
+      @moq/lite                                    moq-native (Rust)
+```
+
+- **CAN server** uses a broadcast pattern: publishes state on a `state` track (1-to-many), subscribes to commands on a `cmd` track (many-to-1)
+- **Serial server** uses a bidirectional stream pattern (`MoqStream`): each side publishes on one sub-path and subscribes to the other (`c2s` / `s2c`)
+- Browsers connect via **WebTransport** (with WebSocket fallback for self-signed certs)
+- Native clients connect via **QUIC**
+
+---
+
 ### Client Libraries
 
 #### Python
@@ -249,6 +341,16 @@ Clients target macOS, Linux, and Windows. Future: C/C++ bindings via Rust ABI.
 | `so100_teleop`     | Teleoperate a remote SO-100 arm from a local leader arm    | `iroh`, `serial`   |
 | `reachy_mini`      | Reachy Mini robot control over remote serial               | `iroh`, `serial`   |
 | `moq_test`         | MoQ relay publish/subscribe diagnostic test                | —                  |
+
+#### Web Examples (`js/examples/`, run with `cd js && npm run examples`)
+
+| Example              | Description                                                     |
+| -------------------- | --------------------------------------------------------------- |
+| `openarm.html`       | 3D OpenArm visualizer — CAN motor state via MoQ (Damiao motors) |
+| `urdf_viewer.html`   | URDF robot viewer — serial servo state via MoQ (FeeTech STS3215)|
+| `can_cmd_test.html`  | CAN command publisher — send raw CAN frames via MoQ             |
+| `publish.html`       | Serial → MoQ publisher (WebSerial)                              |
+| `subscribe.html`     | MoQ → Console subscriber                                       |
 
 ### ALPN Protocols
 

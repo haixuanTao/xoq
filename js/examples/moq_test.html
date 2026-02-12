@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MoQ Test</title>
+  <style>
+    body { font-family: monospace; background: #1a1a1a; color: #0f0; padding: 1rem; }
+    .error { color: #f00; }
+    .info { color: #ff0; }
+  </style>
+</head>
+<body>
+  <h2>MoQ Subscribe Test</h2>
+  <div id="log"></div>
+
+  <script type="module">
+    import * as Moq from "@moq/lite";
+
+    const relay = new URLSearchParams(location.search).get("relay") || "https://cdn.1ms.ai";
+    const path = new URLSearchParams(location.search).get("path") || "anon/xoq-test";
+    const track = new URLSearchParams(location.search).get("track") || "video";
+
+    function log(msg, cls = "") {
+      const el = document.createElement("div");
+      el.textContent = `[${new Date().toISOString().slice(11,23)}] ${msg}`;
+      if (cls) el.className = cls;
+      document.getElementById("log").appendChild(el);
+      // Also emit to console so Playwright can capture it
+      console.log(msg);
+    }
+
+    async function run() {
+      log(`Connecting to ${relay}/${path}...`, "info");
+      const conn = await Moq.Connection.connect(new URL(`${relay}/${path}`));
+      log("Connected!", "info");
+
+      // Broadcast sub-path is "" because the full path is already in the URL
+      log(`Subscribing to broadcast track="${track}"...`, "info");
+      const broadcast = conn.consume(Moq.Path.from(""));
+      const sub = broadcast.subscribe(track, 0);
+      log("Subscribed, waiting for data...", "info");
+
+      let count = 0;
+      while (true) {
+        const group = await sub.nextGroup();
+        if (!group) { log("No more groups"); break; }
+
+        while (true) {
+          const frame = await group.readFrame();
+          if (!frame) break;
+          count++;
+          const text = new TextDecoder().decode(frame);
+          log(`[${count}] ${text.length > 100 ? text.slice(0, 100) + "..." : text}`);
+        }
+      }
+
+      log("Done");
+      await conn.close();
+    }
+
+    run().catch(e => log(`ERROR: ${e.message}`, "error"));
+  </script>
+</body>
+</html>

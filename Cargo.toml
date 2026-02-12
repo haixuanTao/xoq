@@ -40,8 +40,8 @@ audio-remote = ["iroh", "audio"]
 [dependencies]
 moq-transport = "0.12"
 moq-token = "0.5"
-iroh = { version = "0.95", optional = true }
-iroh-quinn-proto = { version = "0.13", optional = true }
+iroh = { version = "0.96", optional = true }
+iroh-quinn-proto = { version = "0.15", optional = true }
 serialport = { version = "4", optional = true }
 v4l = { version = "0.14", optional = true }
 image = { version = "0.25", optional = true }

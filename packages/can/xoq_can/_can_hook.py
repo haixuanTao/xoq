@@ -23,9 +23,13 @@ _IROH_ID_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 def _is_remote_channel(channel):
-    """Return True if *channel* looks like a remote CAN bus identifier."""
+    """Return True if *channel* looks like a remote CAN bus identifier.
+
+    Matches iroh node IDs (64-char hex), MoQ paths (contains '/'),
+    and full MoQ URLs (https://...).
+    """
     s = str(channel) if channel is not None else ""
-    return bool(_IROH_ID_RE.match(s))
+    return bool(_IROH_ID_RE.match(s)) or '/' in s or s.startswith("https://") or s.startswith("http://")
 
 
 class _MissingPythonCan:
@@ -47,10 +51,14 @@ class _XoqBusType(type):
         if _is_remote_channel(channel):
             # Strip args that xoq doesn't need but python-can passes
             kwargs.pop("interface", None)
+            # Keep relay and insecure for MoQ paths, pass through to xoq_can.Bus
             if args:
                 return cls._xoq(*args, **kwargs)
             return cls._xoq(**kwargs)
 
+        # Strip MoQ-specific kwargs before passing to python-can
+        kwargs.pop("relay", None)
+        kwargs.pop("insecure", None)
         return cls._real(*args, **kwargs)
 
     def __instancecheck__(cls, instance):
@@ -129,25 +137,29 @@ def _make_synthetic_can():
 class _CanFinder(importlib.abc.MetaPathFinder):
     """One-shot meta-path finder that intercepts ``import can``."""
 
+    _resolving = False  # guard against recursive find_spec calls
+
     def find_spec(self, fullname, path, target=None):
-        if fullname != "can":
+        if fullname != "can" or self._resolving:
             return None
 
-        # Remove ourselves to avoid recursion
-        sys.meta_path[:] = [f for f in sys.meta_path if f is not self]
+        # Guard against recursion while we call find_spec for the real package
+        self._resolving = True
+        try:
+            spec = importlib.util.find_spec("can")
+        finally:
+            self._resolving = False
 
-        # Try the real python-can first
-        spec = importlib.util.find_spec("can")
         if spec is not None:
-            # Wrap the loader to patch after loading
+            # Wrap the loader to patch after loading, then remove ourselves
             original_loader = spec.loader
-            spec.loader = _PatchingLoader(original_loader)
+            spec.loader = _PatchingLoader(original_loader, self)
             return spec
 
         # python-can not installed — provide synthetic module from xoq_can
         return importlib.machinery.ModuleSpec(
             "can",
-            _SyntheticCanLoader(),
+            _SyntheticCanLoader(self),
             origin="xoq_can",
         )
 
@@ -155,8 +167,9 @@ class _CanFinder(importlib.abc.MetaPathFinder):
 class _PatchingLoader:
     """Loader wrapper that patches can after the real loader finishes."""
 
-    def __init__(self, original):
+    def __init__(self, original, finder):
         self._original = original
+        self._finder = finder
 
     def create_module(self, spec):
         if hasattr(self._original, "create_module"):
@@ -166,16 +179,22 @@ class _PatchingLoader:
     def exec_module(self, module):
         self._original.exec_module(module)
         _patch_can(module)
+        # Remove the finder now that we've successfully loaded and patched
+        sys.meta_path[:] = [f for f in sys.meta_path if f is not self._finder]
 
 
 class _SyntheticCanLoader:
     """Loader that creates a synthetic can module backed by xoq_can."""
 
+    def __init__(self, finder):
+        self._finder = finder
+
     def create_module(self, spec):
         return _make_synthetic_can()
 
     def exec_module(self, module):
-        pass  # already populated in create_module
+        # Remove the finder now that we've provided the synthetic module
+        sys.meta_path[:] = [f for f in sys.meta_path if f is not self._finder]
 
 
 def install():

@@ -111,6 +111,10 @@ pub mod opencv;
 #[cfg(any(feature = "camera-remote", all(feature = "camera", feature = "iroh")))]
 pub mod camera_client;
 
+// Shared NVENC AV1 encoder (requires nvenc feature)
+#[cfg(feature = "nvenc")]
+pub mod nvenc_av1;
+
 // Intel RealSense depth camera (Linux only)
 #[cfg(feature = "realsense")]
 pub mod realsense;

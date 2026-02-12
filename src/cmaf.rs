@@ -1105,6 +1105,8 @@ pub struct Av1CmafMuxer {
     height: u32,
     /// AV1 Sequence Header OBU (for av1C config box)
     sequence_header_obu: Vec<u8>,
+    /// Whether the stream is high bit depth (10-bit or 12-bit)
+    high_bitdepth: bool,
     pending_frames: Vec<PendingFrame>,
     sequence_number: u32,
     fragment_base_dts: i64,
@@ -1114,6 +1116,7 @@ pub struct Av1CmafMuxer {
 
 impl Av1CmafMuxer {
     /// Create a new AV1 CMAF muxer.
+    /// Create a new AV1 CMAF muxer. Set `high_bitdepth` to true for 10-bit streams.
     pub fn new(config: CmafConfig) -> Self {
         Self {
             config,
@@ -1121,12 +1124,18 @@ impl Av1CmafMuxer {
             width: 0,
             height: 0,
             sequence_header_obu: Vec::new(),
+            high_bitdepth: false,
             pending_frames: Vec::new(),
             sequence_number: 1,
             fragment_base_dts: 0,
             last_dts: 0,
             track_id: 1,
         }
+    }
+
+    /// Set high bit depth flag (10-bit encoding). Must be called before create_init_segment.
+    pub fn set_high_bitdepth(&mut self, hbd: bool) {
+        self.high_bitdepth = hbd;
     }
 
     /// Create the initialization segment (ftyp + moov with av01/av1C).
@@ -1522,7 +1531,7 @@ impl Av1CmafMuxer {
         // Default values (profile 0, level 4.0, 8-bit 4:2:0)
         let mut seq_profile = 0u8;
         let mut seq_level_idx = 8u8; // Level 4.0
-        let high_bitdepth = 0u8;
+        let high_bitdepth = if self.high_bitdepth { 1u8 } else { 0u8 };
         let twelve_bit = 0u8;
         let monochrome = 0u8;
         let mut chroma_x = 1u8;
