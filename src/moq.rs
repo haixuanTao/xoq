@@ -112,7 +112,7 @@ impl MoqBuilder {
 
         Ok(MoqPublisher {
             broadcast: broadcast.producer,
-            _session: session,
+            session,
         })
     }
 
@@ -146,7 +146,7 @@ impl MoqBuilder {
         Ok((
             MoqPublisher {
                 broadcast: broadcast.producer,
-                _session: session,
+                session,
             },
             writer,
         ))
@@ -217,7 +217,7 @@ impl MoqConnection {
 /// A publish-only MoQ connection
 pub struct MoqPublisher {
     broadcast: moq_lite::BroadcastProducer,
-    _session: moq_lite::Session,
+    session: moq_lite::Session,
 }
 
 impl MoqPublisher {
@@ -228,6 +228,11 @@ impl MoqPublisher {
             track: track_producer,
             group: None,
         }
+    }
+
+    /// Returns a future that resolves when the MoQ session closes.
+    pub async fn closed(&self) -> Result<(), moq_lite::Error> {
+        self.session.closed().await
     }
 }
 

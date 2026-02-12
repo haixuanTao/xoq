@@ -4,7 +4,6 @@
 //! connection tasks via channels.
 
 use anyhow::Result;
-use iroh::Watcher;
 use socketcan::Socket;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -654,6 +653,7 @@ async fn handle_connection(
 }
 
 /// Publish CAN frames to MoQ relay for browser monitoring.
+/// Automatically reconnects when the relay session drops.
 async fn moq_state_publisher(
     relay: &str,
     path: &str,
@@ -667,45 +667,58 @@ async fn moq_state_publisher(
         builder = builder.disable_tls_verify();
     }
 
-    // Retry connection with backoff
-    let mut delay = Duration::from_secs(1);
-    let (_pub, mut writer) = loop {
-        match builder
-            .clone()
-            .path(&format!("{}/state", path))
-            .connect_publisher_with_track("can")
-            .await
-        {
-            Ok(result) => break result,
-            Err(e) => {
-                tracing::warn!("MoQ connect failed: {}, retrying in {:?}...", e, delay);
-                // Drain stale frames while waiting
-                while rx.try_recv().is_ok() {}
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(30));
-            }
-        }
-    };
-    tracing::info!("MoQ state publisher connected on {}/state", path);
-
-    let mut batch_buf = Vec::with_capacity(1024);
     loop {
-        // Wait for at least one frame
-        let first = match rx.recv().await {
-            Some(frame) => frame,
-            None => break,
+        // Connect with backoff
+        let mut delay = Duration::from_secs(1);
+        let (publisher, mut writer) = loop {
+            match builder
+                .clone()
+                .path(&format!("{}/state", path))
+                .connect_publisher_with_track("can")
+                .await
+            {
+                Ok(result) => break result,
+                Err(e) => {
+                    tracing::warn!("MoQ connect failed: {}, retrying in {:?}...", e, delay);
+                    while rx.try_recv().is_ok() {}
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                }
+            }
+        };
+        tracing::info!("MoQ state publisher connected on {}/state", path);
+
+        let mut batch_buf = Vec::with_capacity(1024);
+        let disconnected = loop {
+            tokio::select! {
+                result = publisher.closed() => {
+                    tracing::warn!("MoQ session closed: {:?}, reconnecting...", result.err());
+                    break false;
+                }
+                frame = rx.recv() => {
+                    let first = match frame {
+                        Some(f) => f,
+                        None => break true, // channel closed, shut down
+                    };
+
+                    batch_buf.clear();
+                    batch_buf.extend_from_slice(&wire::encode(&first));
+
+                    while let Ok(f) = rx.try_recv() {
+                        batch_buf.extend_from_slice(&wire::encode(&f));
+                    }
+
+                    writer.write(batch_buf.clone());
+                }
+            }
         };
 
-        batch_buf.clear();
-        batch_buf.extend_from_slice(&wire::encode(&first));
-
-        // Drain all immediately available frames into the same batch
-        while let Ok(frame) = rx.try_recv() {
-            batch_buf.extend_from_slice(&wire::encode(&frame));
+        if disconnected {
+            break;
         }
 
-        // Single MoQ group write for the entire batch
-        writer.write(batch_buf.clone());
+        // Drain stale frames before reconnecting
+        while rx.try_recv().is_ok() {}
     }
     Ok(())
 }

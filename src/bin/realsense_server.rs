@@ -320,185 +320,230 @@ async fn main() -> Result<()> {
         NvencAv1Encoder::new_cqp(args.width, args.height, args.fps, args.depth_qp, true)?;
     tracing::info!("AV1 depth encoder ready (P7 high-quality, CQP)");
 
-    // Initialize AV1 CMAF muxers
-    let mut color_muxer = Av1CmafMuxer::new(CmafConfig {
-        fragment_duration_ms: 33,
-        timescale: 90000,
-    });
-    let mut depth_muxer = Av1CmafMuxer::new(CmafConfig {
-        fragment_duration_ms: 33,
-        timescale: 90000,
-    });
-    depth_muxer.set_high_bitdepth(true); // 10-bit depth encoding
-
-    // Connect to MoQ relay — try :4443 (QUIC-only) first, fall back to default port
-    let parsed_relay = url::Url::parse(&args.relay)?;
-    let relay_4443 = if parsed_relay.port().is_none() {
-        // No explicit port — try :4443 first
-        format!(
-            "{}://{}:4443{}",
-            parsed_relay.scheme(),
-            parsed_relay.host_str().unwrap_or("localhost"),
-            parsed_relay.path()
-        )
-    } else {
-        args.relay.clone()
-    };
-
-    tracing::info!(
-        "Connecting to MoQ relay: {} (trying :4443 first)",
-        args.relay
-    );
-    let mut builder_4443 = MoqBuilder::new().relay(&relay_4443).path(&args.path);
-    if args.insecure {
-        builder_4443 = builder_4443.disable_tls_verify();
-    }
-
-    let mut publisher = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        builder_4443.connect_publisher(),
-    )
-    .await
-    {
-        Ok(Ok(pub_)) => {
-            tracing::info!("Connected to MoQ relay on :4443");
-            pub_
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("MoQ :4443 failed: {}, falling back to {}", e, args.relay);
-            let mut builder = MoqBuilder::new().relay(&args.relay).path(&args.path);
-            if args.insecure {
-                builder = builder.disable_tls_verify();
-            }
-            builder.connect_publisher().await?
-        }
-        Err(_) => {
-            tracing::warn!("MoQ :4443 timed out, falling back to {}", args.relay);
-            let mut builder = MoqBuilder::new().relay(&args.relay).path(&args.path);
-            if args.insecure {
-                builder = builder.disable_tls_verify();
-            }
-            builder.connect_publisher().await?
-        }
-    };
-    let mut video_track = publisher.create_track("video");
-    let mut depth_track = publisher.create_track("depth");
-    tracing::info!("MoQ connected, tracks: video + depth");
-
-    // State for init segments
-    let mut color_init_segment: Option<Vec<u8>> = None;
-    let mut depth_init_segment: Option<Vec<u8>> = None;
     let mut depth_p010 = Vec::new();
     let mut frame_count = 0u64;
 
+    // Outer reconnect loop — camera stays open, only MoQ reconnects
+    let mut moq_delay = std::time::Duration::from_secs(1);
     loop {
-        // Capture aligned color + depth
-        let frames = camera.capture()?;
-        let timestamp_us = frames.timestamp_us;
+        // Connect to MoQ relay — try :4443 (QUIC-only) first, fall back to default port
+        let parsed_relay = url::Url::parse(&args.relay)?;
+        let relay_4443 = if parsed_relay.port().is_none() {
+            format!(
+                "{}://{}:4443{}",
+                parsed_relay.scheme(),
+                parsed_relay.host_str().unwrap_or("localhost"),
+                parsed_relay.path()
+            )
+        } else {
+            args.relay.clone()
+        };
 
-        // ---- Color pipeline: RGB → NV12 → AV1 → CMAF → "video" track ----
-        let av1_data = color_encoder.encode_rgb(&frames.color_rgb, timestamp_us)?;
-
-        let parsed = parse_av1_frame(&av1_data);
-
-        // Create AV1 init segment on first keyframe with sequence header
-        if color_init_segment.is_none() {
-            if let Some(ref seq_hdr) = parsed.sequence_header {
-                let init = color_muxer.create_init_segment(seq_hdr, frames.width, frames.height);
-                video_track.write(init.clone());
-                color_init_segment = Some(init);
-                tracing::info!("Sent AV1 CMAF init segment (color)");
-            }
+        tracing::info!(
+            "Connecting to MoQ relay: {} (trying :4443 first)",
+            args.relay
+        );
+        let mut builder_4443 = MoqBuilder::new().relay(&relay_4443).path(&args.path);
+        if args.insecure {
+            builder_4443 = builder_4443.disable_tls_verify();
         }
 
-        let pts = (frame_count as i64) * 90000 / args.fps as i64;
-        let dts = pts;
-        let duration = (90000 / args.fps) as u32;
-
-        if let Some(segment) =
-            color_muxer.add_frame(&parsed.data, pts, dts, duration, parsed.is_keyframe)
+        let publisher = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            builder_4443.connect_publisher(),
+        )
+        .await
         {
-            if parsed.is_keyframe {
-                if let Some(ref init) = color_init_segment {
-                    let mut combined = init.clone();
-                    combined.extend_from_slice(&segment);
-                    video_track.write(combined);
+            Ok(Ok(pub_)) => {
+                tracing::info!("Connected to MoQ relay on :4443");
+                Some(pub_)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("MoQ :4443 failed: {}, falling back to {}", e, args.relay);
+                let mut builder = MoqBuilder::new().relay(&args.relay).path(&args.path);
+                if args.insecure {
+                    builder = builder.disable_tls_verify();
+                }
+                match builder.connect_publisher().await {
+                    Ok(pub_) => Some(pub_),
+                    Err(e) => {
+                        tracing::error!(
+                            "MoQ connect failed: {}, retrying in {:?}...",
+                            e,
+                            moq_delay
+                        );
+                        tokio::time::sleep(moq_delay).await;
+                        moq_delay = (moq_delay * 2).min(std::time::Duration::from_secs(30));
+                        continue;
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!("MoQ :4443 timed out, falling back to {}", args.relay);
+                let mut builder = MoqBuilder::new().relay(&args.relay).path(&args.path);
+                if args.insecure {
+                    builder = builder.disable_tls_verify();
+                }
+                match builder.connect_publisher().await {
+                    Ok(pub_) => Some(pub_),
+                    Err(e) => {
+                        tracing::error!(
+                            "MoQ connect failed: {}, retrying in {:?}...",
+                            e,
+                            moq_delay
+                        );
+                        tokio::time::sleep(moq_delay).await;
+                        moq_delay = (moq_delay * 2).min(std::time::Duration::from_secs(30));
+                        continue;
+                    }
+                }
+            }
+        };
+        let mut publisher = publisher.unwrap();
+        let mut video_track = publisher.create_track("video");
+        let mut depth_track = publisher.create_track("depth");
+        tracing::info!("MoQ connected, tracks: video + depth");
+        moq_delay = std::time::Duration::from_secs(1); // reset backoff on success
+
+        // Fresh muxers + init segments so new subscribers get clean state on reconnect
+        let mut color_muxer = Av1CmafMuxer::new(CmafConfig {
+            fragment_duration_ms: 33,
+            timescale: 90000,
+        });
+        let mut depth_muxer = Av1CmafMuxer::new(CmafConfig {
+            fragment_duration_ms: 33,
+            timescale: 90000,
+        });
+        depth_muxer.set_high_bitdepth(true);
+        let mut color_init_segment: Option<Vec<u8>> = None;
+        let mut depth_init_segment: Option<Vec<u8>> = None;
+
+        // Inner capture + publish loop
+        let disconnect_reason = loop {
+            // Capture aligned color + depth
+            let frames = camera.capture()?;
+            let timestamp_us = frames.timestamp_us;
+
+            // ---- Color pipeline: RGB → NV12 → AV1 → CMAF → "video" track ----
+            let av1_data = color_encoder.encode_rgb(&frames.color_rgb, timestamp_us)?;
+
+            let parsed = parse_av1_frame(&av1_data);
+
+            // Create AV1 init segment on first keyframe with sequence header
+            if color_init_segment.is_none() {
+                if let Some(ref seq_hdr) = parsed.sequence_header {
+                    let init =
+                        color_muxer.create_init_segment(seq_hdr, frames.width, frames.height);
+                    video_track.write(init.clone());
+                    color_init_segment = Some(init);
+                    tracing::info!("Sent AV1 CMAF init segment (color)");
+                }
+            }
+
+            let pts = (frame_count as i64) * 90000 / args.fps as i64;
+            let dts = pts;
+            let duration = (90000 / args.fps) as u32;
+
+            if let Some(segment) =
+                color_muxer.add_frame(&parsed.data, pts, dts, duration, parsed.is_keyframe)
+            {
+                if parsed.is_keyframe {
+                    if let Some(ref init) = color_init_segment {
+                        let mut combined = init.clone();
+                        combined.extend_from_slice(&segment);
+                        video_track.write(combined);
+                    } else {
+                        video_track.write(segment);
+                    }
                 } else {
                     video_track.write(segment);
                 }
-            } else {
-                video_track.write(segment);
             }
-        }
 
-        // ---- Depth pipeline: u16 mm → P010 → AV1 10-bit → CMAF → "depth" track ----
-        depth_to_p010(
-            &frames.depth_mm,
-            &mut depth_p010,
-            frames.width,
-            frames.height,
-        );
-        let depth_av1 = depth_encoder.encode_p010(&depth_p010, timestamp_us)?;
+            // ---- Depth pipeline: u16 mm → P010 → AV1 10-bit → CMAF → "depth" track ----
+            depth_to_p010(
+                &frames.depth_mm,
+                &mut depth_p010,
+                frames.width,
+                frames.height,
+            );
+            let depth_av1 = depth_encoder.encode_p010(&depth_p010, timestamp_us)?;
 
-        let depth_parsed = parse_av1_frame(&depth_av1);
+            let depth_parsed = parse_av1_frame(&depth_av1);
 
-        // Create depth init segment on first keyframe
-        if depth_init_segment.is_none() {
-            if let Some(ref seq_hdr) = depth_parsed.sequence_header {
-                let init = depth_muxer.create_init_segment(seq_hdr, frames.width, frames.height);
-                depth_track.write(init.clone());
-                depth_init_segment = Some(init);
-                tracing::info!("Sent AV1 CMAF init segment (depth, 10-bit)");
+            // Create depth init segment on first keyframe
+            if depth_init_segment.is_none() {
+                if let Some(ref seq_hdr) = depth_parsed.sequence_header {
+                    let init =
+                        depth_muxer.create_init_segment(seq_hdr, frames.width, frames.height);
+                    depth_track.write(init.clone());
+                    depth_init_segment = Some(init);
+                    tracing::info!("Sent AV1 CMAF init segment (depth, 10-bit)");
+                }
             }
-        }
 
-        if let Some(segment) = depth_muxer.add_frame(
-            &depth_parsed.data,
-            pts,
-            dts,
-            duration,
-            depth_parsed.is_keyframe,
-        ) {
-            if depth_parsed.is_keyframe {
-                if let Some(ref init) = depth_init_segment {
-                    let mut combined = init.clone();
-                    combined.extend_from_slice(&segment);
-                    depth_track.write(combined);
+            if let Some(segment) = depth_muxer.add_frame(
+                &depth_parsed.data,
+                pts,
+                dts,
+                duration,
+                depth_parsed.is_keyframe,
+            ) {
+                if depth_parsed.is_keyframe {
+                    if let Some(ref init) = depth_init_segment {
+                        let mut combined = init.clone();
+                        combined.extend_from_slice(&segment);
+                        depth_track.write(combined);
+                    } else {
+                        depth_track.write(segment);
+                    }
                 } else {
                     depth_track.write(segment);
                 }
-            } else {
-                depth_track.write(segment);
             }
-        }
 
-        frame_count += 1;
+            frame_count += 1;
 
-        if (frame_count) % (args.fps as u64) == 0 {
-            let mut dmin = u16::MAX;
-            let mut dmax = 0u16;
-            let mut nonzero = 0u32;
-            for &d in &frames.depth_mm {
-                if d > 0 {
-                    nonzero += 1;
-                    if d < dmin {
-                        dmin = d;
-                    }
-                    if d > dmax {
-                        dmax = d;
+            if (frame_count) % (args.fps as u64) == 0 {
+                let mut dmin = u16::MAX;
+                let mut dmax = 0u16;
+                let mut nonzero = 0u32;
+                for &d in &frames.depth_mm {
+                    if d > 0 {
+                        nonzero += 1;
+                        if d < dmin {
+                            dmin = d;
+                        }
+                        if d > dmax {
+                            dmax = d;
+                        }
                     }
                 }
+                tracing::info!(
+                    "Frame {}: color {}B, depth {}B | depth: {}–{}mm, {}/{} valid",
+                    frame_count,
+                    av1_data.len(),
+                    depth_av1.len(),
+                    dmin,
+                    dmax,
+                    nonzero,
+                    frames.depth_mm.len()
+                );
             }
-            tracing::info!(
-                "Frame {}: color {}B, depth {}B | depth: {}–{}mm, {}/{} valid",
-                frame_count,
-                av1_data.len(),
-                depth_av1.len(),
-                dmin,
-                dmax,
-                nonzero,
-                frames.depth_mm.len()
-            );
-        }
+
+            // Check if session is still alive (non-blocking)
+            // Use poll-style check: select with a zero-duration sleep
+            tokio::select! {
+                biased;
+                result = publisher.closed() => {
+                    break format!("MoQ session closed: {:?}", result.err());
+                }
+                _ = tokio::time::sleep(std::time::Duration::ZERO) => {
+                    // Session still alive, continue
+                }
+            }
+        };
+
+        tracing::warn!("{}, reconnecting to relay...", disconnect_reason);
     }
 }

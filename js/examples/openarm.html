@@ -14,7 +14,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      padding-bottom: 48px;
+      padding-bottom: 84px;
     }
 
     /* Top bar */
@@ -119,7 +119,7 @@
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0;
-      bottom: 48px;
+      bottom: 84px;
       width: 100%;
       background: #16162a;
       flex-direction: column;
@@ -216,7 +216,7 @@
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0;
-      bottom: 48px;
+      bottom: 84px;
       height: auto;
       background: #0a0a1a;
       overflow-y: auto;
@@ -263,7 +263,7 @@
     /* Toast notifications */
     .toast-container {
       position: fixed;
-      bottom: 56px;
+      bottom: 92px;
       left: 0.5rem;
       z-index: 150;
       display: flex;
@@ -294,6 +294,32 @@
     .toast-error   { border-left-color: #ff4757; color: #ff4757; }
     .toast-data    { border-left-color: #00d4ff; color: #00d4ff; }
     .toast-info    { border-left-color: #888; }
+    .toast-chat    { border-left-color: #a855f7; color: #a855f7; }
+
+    /* Chat bar (always visible above tab bar) */
+    .chat-bar {
+      position: fixed;
+      bottom: 48px; left: 0; right: 0;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0 0.5rem;
+      background: #16162a;
+      border-top: 1px solid #333;
+      z-index: 200;
+    }
+    .chat-bar input[type="text"] {
+      padding: 0.25rem 0.5rem;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background: #2a2a4a;
+      color: #fff;
+      font-size: 0.8rem;
+    }
+    .chat-bar #chatUsername { width: 80px; }
+    .chat-bar #chatInput { flex: 1; }
+    .chat-bar #chatInput::placeholder { color: #555; }
 
     @keyframes toastIn {
       from { opacity: 0; transform: translateY(8px); }
@@ -314,6 +340,19 @@
   </style>
 </head>
 <body>
+  <script>
+    (function() {
+      var isChrome = /chrome/i.test(navigator.userAgent) && !/edg/i.test(navigator.userAgent);
+      if (!isChrome) {
+        document.addEventListener('DOMContentLoaded', function() {
+          var b = document.createElement('div');
+          b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#b91c1c;color:#fff;padding:8px 16px;text-align:center;font:14px/1.4 system-ui,sans-serif;';
+          b.innerHTML = 'This app currently requires <b>Chrome</b> (desktop). Safari and Firefox support is coming soon.';
+          document.body.prepend(b);
+        });
+      }
+    })();
+  </script>
   <div class="top-bar">
     <div class="top-bar-main">
       <h1>OpenArm 3D</h1>
@@ -355,19 +394,24 @@
       <label style="font-size:0.75rem;">Pt size: <input type="range" id="ptSize" min="0.5" max="8" step="0.5" value="2" style="width:60px; vertical-align:middle;" /></label>
       <span style="font-size:0.7rem; color:#666;">depth: 1mm</span>
       <span style="border-left:1px solid #444; height:1.2rem;"></span>
-      <label style="font-size:0.75rem;">Cam X:<input type="number" id="camX" value="-0.26" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-      <label style="font-size:0.75rem;">Y:<input type="number" id="camY" value="0.79" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-      <label style="font-size:0.75rem;">Z:<input type="number" id="camZ" value="0.22" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Cam X:<input type="number" id="camX" value="-0.33" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Y:<input type="number" id="camY" value="0.84" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Z:<input type="number" id="camZ" value="0.29" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <label style="font-size:0.75rem;">R:<input type="number" id="camRoll" value="90" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-      <label style="font-size:0.75rem;">P:<input type="number" id="camPitch" value="-225" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">P:<input type="number" id="camPitch" value="-222" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <label style="font-size:0.75rem;">Yw:<input type="number" id="camYaw" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <span style="border-left:1px solid #444; height:1.2rem;"></span>
-      <label style="font-size:0.75rem;">Cam2 X:<input type="number" id="cam2X" value="0.26" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-      <label style="font-size:0.75rem;">Y:<input type="number" id="cam2Y" value="0.79" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
-      <label style="font-size:0.75rem;">Z:<input type="number" id="cam2Z" value="0.22" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Cam2 X:<input type="number" id="cam2X" value="-0.33" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Y:<input type="number" id="cam2Y" value="0.84" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <label style="font-size:0.75rem;">Z:<input type="number" id="cam2Z" value="0.29" step="0.01" style="width:48px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <label style="font-size:0.75rem;">R:<input type="number" id="cam2Roll" value="90" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <label style="font-size:0.75rem;">P:<input type="number" id="cam2Pitch" value="-225" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
       <label style="font-size:0.75rem;">Yw:<input type="number" id="cam2Yaw" value="0" step="1" style="width:40px; padding:0.2rem; border:1px solid #444; border-radius:3px; background:#2a2a4a; color:#fff; font-size:0.75rem;" /></label>
+      <span style="border-left:1px solid #444; height:1.2rem;"></span>
+      <label>
+        Chat:
+        <input type="text" id="chatPath" style="width:160px;" />
+      </label>
     </div>
   </div>
 
@@ -457,6 +501,10 @@
   </div>
 
   <div class="log-panel" id="log"></div>
+  <div class="chat-bar">
+    <input type="text" id="chatUsername" placeholder="Name" />
+    <input type="text" id="chatInput" placeholder="Press Enter to send" value="hello world" />
+  </div>
   <div class="toast-container" id="toasts"></div>
 
   <div style="position:fixed; top:-9999px;">
@@ -489,8 +537,17 @@
     leftPathInput.value  = params.has("left") ? (params.get("left") || "") : (params.get("path") || localStorage.getItem(LS_PREFIX + "left") || "anon/xoq-can-can0/state");
     rightPathInput.value = ls("right", "anon/xoq-can-can1/state");
     depthPathInput.value = ls("depth", "anon/realsense");
-    depth2PathInput.value = ls("depth2", "anon/realsense2");
+    depth2PathInput.value = ls("depth2", "");
     certHashInput.value  = ls("certHash", "");
+
+    const chatPathInput = document.getElementById("chatPath");
+    const chatUsernameInput = document.getElementById("chatUsername");
+    chatPathInput.value = ls("chatPath", "anon/openarm-chat");
+    if (!localStorage.getItem(LS_PREFIX + "chatUsername")) {
+      localStorage.setItem(LS_PREFIX + "chatUsername", "anon");
+    }
+    chatUsernameInput.value = localStorage.getItem(LS_PREFIX + "chatUsername") || "";
+    chatUsernameInput.addEventListener("input", () => localStorage.setItem(LS_PREFIX + "chatUsername", chatUsernameInput.value));
 
     // Persist all config inputs on change
     const configInputs = {
@@ -504,6 +561,7 @@
       cam2Pitch: document.getElementById("cam2Pitch"), cam2Yaw: document.getElementById("cam2Yaw"),
       queryRate: document.getElementById("queryRate"),
       ptSize: document.getElementById("ptSize"),
+      chatPath: chatPathInput,
     };
     for (const [key, el] of Object.entries(configInputs)) {
       const saved = localStorage.getItem(LS_PREFIX + key);
@@ -999,6 +1057,7 @@
       }
     }
 
+
     class MsePlayer {
       constructor(videoEl, label) {
         this.video = videoEl; this.label = label;
@@ -1255,6 +1314,139 @@
       }
       log("Query loop stopped");
     }
+
+    // ─── Chat ─────────────────────────────────────────────
+    const chatState = {
+      conn: null,
+      broadcast: null,
+      track: null,
+      announced: null,
+      subscribers: new Map(),
+      running: false,
+    };
+
+    function getChatUsername() { return chatUsernameInput.value.trim() || "Anon"; }
+
+    function showChatMessage(msg) {
+      const toast = document.createElement("div");
+      toast.className = "toast toast-chat";
+      toast.style.setProperty('--toast-duration', `${TOAST_DURATION}ms`);
+      toast.textContent = `${msg.name}: ${msg.text}`;
+      toastsEl.prepend(toast);
+      while (toastsEl.children.length > TOAST_MAX) toastsEl.lastChild.remove();
+      setTimeout(() => toast.remove(), TOAST_DURATION + 400);
+    }
+
+    function sendChatMessage(text) {
+      if (!text.trim()) return;
+      const msg = { name: getChatUsername(), text: text.trim(), ts: Date.now() };
+      if (chatState.track) {
+        try { chatState.track.writeJson(msg); } catch (e) {
+          log(`[chat] Send error: ${e.message}`, 'error');
+        }
+      }
+      showChatMessage(msg);
+    }
+
+    async function handleChatPublish() {
+      try {
+        while (chatState.running && chatState.broadcast) {
+          const request = await chatState.broadcast.requested();
+          if (!request) break;
+          if (request.track.name === "messages") {
+            chatState.track = request.track;
+            log(`[chat] Publish track active`, 'success');
+          } else {
+            request.track.close(new Error("unknown track"));
+          }
+        }
+      } catch (e) {
+        if (chatState.running) log(`[chat] Publish error: ${e.message}`, 'error');
+      }
+    }
+
+    async function subscribeToChatUser(username) {
+      try {
+        const broadcast = chatState.conn.consume(Moq.Path.from(username));
+        const track = broadcast.subscribe("messages", 0);
+        chatState.subscribers.set(username, { broadcast, track });
+        log(`[chat] Subscribed to ${username}`, 'data');
+        while (chatState.running) {
+          const msg = await track.readJson();
+          if (!msg) break;
+          showChatMessage(msg);
+        }
+      } catch (e) {
+        if (chatState.running) log(`[chat] ${username}: ${e.message}`, 'error');
+      } finally {
+        chatState.subscribers.delete(username);
+      }
+    }
+
+    async function discoverChatUsers() {
+      try {
+        chatState.announced = chatState.conn.announced();
+        while (chatState.running) {
+          const entry = await chatState.announced.next();
+          if (!entry) break;
+          const path = entry.path;
+          if (path === Moq.Path.from(getChatUsername())) continue;
+          if (entry.active && !chatState.subscribers.has(path)) {
+            log(`[chat] User joined: ${path}`, 'data');
+            subscribeToChatUser(path);
+          } else if (!entry.active) {
+            chatState.subscribers.delete(path);
+            log(`[chat] User left: ${path}`, 'info');
+          }
+        }
+      } catch (e) {
+        if (chatState.running) log(`[chat] Discovery error: ${e.message}`, 'error');
+      }
+    }
+
+    async function connectChat() {
+      const relay = relayInput.value.trim();
+      const chatPath = chatPathInput.value.trim();
+      if (!chatPath) return;
+
+      chatState.running = true;
+      const fullUrl = `${relay}/${chatPath}`;
+      const connectOpts = buildConnectOpts();
+      try {
+        chatState.conn = await Moq.Connection.connect(new URL(fullUrl), connectOpts);
+        log(`[chat] Connected`, 'success');
+
+        chatState.broadcast = new Moq.Broadcast();
+        chatState.conn.publish(Moq.Path.from(getChatUsername()), chatState.broadcast);
+        log(`[chat] Publishing as "${getChatUsername()}"`, 'data');
+
+        handleChatPublish();
+        discoverChatUsers();
+      } catch (e) {
+        log(`[chat] ${e.message}`, 'error');
+      }
+    }
+
+    function disconnectChat() {
+      chatState.running = false;
+      for (const [, sub] of chatState.subscribers) {
+        try { sub.broadcast.close(); } catch {}
+      }
+      chatState.subscribers.clear();
+      if (chatState.announced) { try { chatState.announced.close(); } catch {} chatState.announced = null; }
+      if (chatState.track) { try { chatState.track.close(); } catch {} chatState.track = null; }
+      if (chatState.broadcast) { try { chatState.broadcast.close(); } catch {} chatState.broadcast = null; }
+      if (chatState.conn) { try { chatState.conn.close(); } catch {} chatState.conn = null; }
+    }
+
+    // Chat input handlers
+    document.getElementById('chatInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChatMessage(e.target.value);
+        e.target.value = '';
+      }
+    });
 
     // ─── Three.js Scene ───────────────────────────────────
     const canvas = document.getElementById("threeCanvas");
@@ -1721,6 +1913,9 @@
         // Connect RealSense point cloud if configured (add to subs so finally waits)
         if (depthPath || depth2Path) subs.push(connectRealSense().catch(e => log(`[depth] ${e.message}`, "error")));
 
+        // Connect chat
+        subs.push(connectChat().catch(e => log(`[chat] ${e.message}`, "error")));
+
         queryBtn.disabled = false;
         setStatus("Streaming");
 
@@ -1738,6 +1933,7 @@
           queryBtn.textContent = "Query Motors";
         }
         disconnectRealSense();
+        disconnectChat();
         queryBtn.disabled = true;
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -1755,6 +1951,7 @@
       queryBtn.disabled = true;
       setStatus("Stopping...");
       disconnectRealSense();
+      disconnectChat();
       for (const conn of connections) { try { conn.close(); } catch (e) {} }
       connections = [];
       startBtn.disabled = false;
